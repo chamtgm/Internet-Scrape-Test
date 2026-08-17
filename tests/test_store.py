@@ -91,3 +91,43 @@ def test_same_external_id_different_sources_are_distinct(session, raw_dir):
     upsert_items(session, source_id=source_a.id, items=sample_items(), owner_user_id=None, raw_dir=raw_dir, now=NOW)
     upsert_items(session, source_id=source_b.id, items=sample_items(), owner_user_id=None, raw_dir=raw_dir, now=NOW)
     assert session.execute(select(func.count()).select_from(Item)).scalar_one() == 4
+
+
+def test_upsert_writes_distinct_raw_files_for_identical_content(session, raw_dir):
+    source = make_source(session)
+    items = [
+        NormalizedItem(
+            external_id="dup-1",
+            url="https://example.com/dup-1",
+            content_text="same content",
+            raw={"id": "dup-1"},
+        ),
+        NormalizedItem(
+            external_id="dup-2",
+            url="https://example.com/dup-2",
+            content_text="same content",
+            raw={"id": "dup-2"},
+        ),
+    ]
+    new_count = upsert_items(
+        session, source_id=source.id, items=items, owner_user_id=None, raw_dir=raw_dir, now=NOW
+    )
+    assert new_count == 2
+
+    rows = {row.external_id: row for row in session.execute(select(Item)).scalars().all()}
+    assert rows["dup-1"].raw_path != rows["dup-2"].raw_path
+    assert json.loads((raw_dir / rows["dup-1"].raw_path).read_text()) == {"id": "dup-1"}
+    assert json.loads((raw_dir / rows["dup-2"].raw_path).read_text()) == {"id": "dup-2"}
+
+
+def test_upsert_does_not_rewrite_raw_file_on_replay(session, raw_dir):
+    source = make_source(session)
+    item = sample_items()[:1]
+    upsert_items(session, source_id=source.id, items=item, owner_user_id=None, raw_dir=raw_dir, now=NOW)
+    stored = session.execute(select(Item)).scalars().one()
+    raw_file = raw_dir / stored.raw_path
+    raw_file.write_text(json.dumps({"sentinel": True}))
+
+    second = upsert_items(session, source_id=source.id, items=item, owner_user_id=None, raw_dir=raw_dir, now=NOW)
+    assert second == 0
+    assert json.loads(raw_file.read_text()) == {"sentinel": True}
