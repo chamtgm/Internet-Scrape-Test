@@ -8,10 +8,12 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -75,7 +77,11 @@ class Subscription(Base):
 
 class Item(Base):
     __tablename__ = "items"
-    __table_args__ = (UniqueConstraint("source_id", "external_id", name="uq_items_source_external"),)
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_id", name="uq_items_source_external"),
+        Index("items_content_tsv_idx", "content_tsv", postgresql_using="gin"),
+        Index("items_source_published_idx", "source_id", text("published_at DESC")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
@@ -98,6 +104,7 @@ class Item(Base):
 
 class FetchRun(Base):
     __tablename__ = "fetch_runs"
+    __table_args__ = (Index("fetch_runs_source_started_idx", "source_id", text("started_at DESC")),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"))
