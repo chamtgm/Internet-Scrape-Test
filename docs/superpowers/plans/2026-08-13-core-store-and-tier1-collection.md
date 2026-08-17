@@ -901,10 +901,12 @@ def upsert_items(
     return inserted
 ```
 
+> **Amendment (applied during execution, commit `c5b097c`).** The `_write_raw` above names the file after `content_hash(item.content_text)`, so two items from the same source with identical content collide: the second write silently overwrites the first, while the first row's `raw_path` still points at that file. Calling `_write_raw` before the insert also writes files for rows that `ON CONFLICT` then skips. Fix: name the file `Path(str(source_id)) / f"{content_hash(item.external_id)}.json"`, change `_write_raw` to take that precomputed relative path (`_write_raw(raw_dir: Path, relative: Path, raw: dict[str, Any]) -> None`), and call it only inside the successful-insert branch. `Item.content_hash` still stores the *content* digest — only the filename changes. Two regression tests were added, bringing this task to 7 tests.
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_store.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (5 passed; 7 after the amendment above)
 
 - [ ] **Step 6: Commit**
 
@@ -1108,6 +1110,8 @@ def test_search_ranks_title_matches_above_body_matches(session, raw_dir):
 
 The last test relies on the `setweight(..., 'A')` on titles from Task 1's migration.
 
+> **Amendment (applied during execution, commit `eaa632d`).** `test_search_ranks_title_matches_above_body_matches` above does **not** isolate what it claims. Its fixture confounds field weighting with term frequency: "Release v2 indexing" carries the term in both title and body (2 occurrences) while "Postgres full text search" carries it only in the body (1). Measured against the live database, the expected row wins with `setweight` (0.608 vs 0.243) *and* without it — so the test would pass even if `setweight` were removed from the schema. Replace it with `test_title_match_outranks_body_match`: seed two items on one source using a term appearing nowhere else in the file (`kestrel`), one occurrence each, differing only in which field carries it — `title="Kestrel release notes"`/`content_text="nothing relevant here"` and `title="Nothing relevant"`/`content_text="kestrel appears once here"`. **Insert the title item first and the body item second**, so the `desc(Item.id)` tie-breaker points away from the expected answer and a rank tie fails the test; unweighted, the two rank identically at 0.0608. Two further tests were added in the same round: `before_id` pagination (with a private item id placed inside the paginated range, proving isolation holds within a page) and `kinds` + `subscribed_only` combined. This task's total is 11 tests, and the full suite is 21.
+
 - [ ] **Step 3: Run both test files to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_query_isolation.py tests/test_query_search.py -v`
@@ -1147,7 +1151,7 @@ def feed(
     stmt = select(Item).where(visible_to(user_id))
     if before_id is not None:
         stmt = stmt.where(Item.id < before_id)
-    stmt = stmt.order_by(desc(Item.published_at.nulls_last()), desc(Item.id)).limit(limit)
+    stmt = stmt.order_by(Item.published_at.desc().nulls_last(), desc(Item.id)).limit(limit)
     return list(session.execute(stmt).scalars().all())
 
 
