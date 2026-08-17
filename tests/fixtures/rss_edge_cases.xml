@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Blog</title>
+    <link>https://example.com</link>
+    <item>
+      <title>Dated with offset</title>
+      <link>https://example.com/posts/offset</link>
+      <guid>https://example.com/posts/offset</guid>
+      <pubDate>Tue, 12 Aug 2026 09:30:00 +0800</pubDate>
+      <description>A post with a non-UTC offset pubDate.</description>
+    </item>
+    <item>
+      <title>Undated post</title>
+      <link>https://example.com/posts/undated</link>
+      <guid>https://example.com/posts/undated</guid>
+      <description>A post with no pubDate element at all.</description>
+    </item>
+  </channel>
+</rss>

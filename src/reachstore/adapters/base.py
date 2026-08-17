@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+import httpx
 
 
 @dataclass(frozen=True)
@@ -16,12 +19,6 @@ class NormalizedItem:
     author_handle: str | None = None
     published_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
-
-
-import subprocess
-from typing import Protocol, runtime_checkable
-
-import httpx
 
 
 class AdapterError(RuntimeError):

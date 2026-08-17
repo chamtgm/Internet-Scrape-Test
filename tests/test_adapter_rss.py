@@ -56,3 +56,22 @@ def test_unparseable_body_raises_adapter_error():
     adapter = RssAdapter(FakeHttp("this is not a feed at all"))
     with pytest.raises(AdapterError):
         adapter.fetch("https://example.com/feed", None)
+
+
+def test_non_utc_offset_is_converted_to_utc(fixtures_dir):
+    adapter = RssAdapter(FakeHttp((fixtures_dir / "rss_edge_cases.xml").read_text()))
+    items = adapter.fetch("https://example.com/feed", None)
+    dated = next(i for i in items if i.title == "Dated with offset")
+    assert dated.published_at == datetime(2026, 8, 12, 1, 30, tzinfo=UTC)
+
+
+def test_undated_entry_survives_since_filter(fixtures_dir):
+    adapter = RssAdapter(FakeHttp((fixtures_dir / "rss_edge_cases.xml").read_text()))
+    items = adapter.fetch("https://example.com/feed", datetime(2026, 8, 13, tzinfo=UTC))
+    assert [i.title for i in items] == ["Undated post"]
+
+
+def test_empty_but_valid_feed_returns_no_items(fixtures_dir):
+    adapter = RssAdapter(FakeHttp((fixtures_dir / "rss_empty.xml").read_text()))
+    items = adapter.fetch("https://example.com/feed", None)
+    assert items == []

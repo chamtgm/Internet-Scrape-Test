@@ -26,7 +26,9 @@ class RssAdapter:
         body = self._http.get(identifier, timeout=self._timeout)
         feed = feedparser.parse(body)
         if not feed.entries:
-            raise AdapterError(f"no entries parsed from {identifier}")
+            if feed.bozo:
+                raise AdapterError(f"could not parse {identifier}: {feed.bozo_exception}")
+            return []
 
         items: list[NormalizedItem] = []
         for entry in feed.entries:
