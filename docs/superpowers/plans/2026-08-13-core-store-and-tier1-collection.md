@@ -1276,6 +1276,8 @@ class SubprocessRunner:
         return result.stdout
 ```
 
+> **Amendment (applied during execution, commit `f4ea3af`).** "Append below `NormalizedItem`" leaves `import subprocess`, `import httpx`, and the `typing` imports stranded mid-file — a PEP 8 E402 violation. Put all imports at the top of `base.py`; only the import statements move, `NormalizedItem` stays above the protocols.
+
 - [ ] **Step 2: Create `tests/fixtures/rss_sample.xml`**
 
 ```xml
@@ -1426,10 +1428,12 @@ class RssAdapter:
         return items
 ```
 
+> **Amendment (applied during execution, commit `f4ea3af`).** `if not feed.entries: raise AdapterError(...)` above conflates two different situations — feedparser returns zero entries both for a garbage body *and* for a well-formed feed with no `<item>` elements yet. A brand-new blog would raise on every cycle and, once Task 7's circuit breaker exists, disable itself after five. Distinguish them with feedparser's own signal: `if not feed.entries: if feed.bozo: raise AdapterError(f"could not parse {identifier}: {feed.bozo_exception}"); return []`. Measured values — garbage body `bozo == 1`, valid empty feed `bozo == False`. Three tests were added in the same round (non-zero UTC offset converts correctly, an undated entry survives a `since` filter, an empty valid feed returns `[]`), bringing this task to 9 tests and the suite to 30.
+
 - [ ] **Step 6: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_adapter_rss.py -v`
-Expected: PASS (6 passed)
+Expected: PASS (6 passed; 9 after the amendment above)
 
 - [ ] **Step 7: Commit**
 
