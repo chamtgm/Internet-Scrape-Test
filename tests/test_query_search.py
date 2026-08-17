@@ -82,7 +82,61 @@ def test_search_filters_by_since(session, raw_dir):
     assert results == []
 
 
-def test_search_ranks_title_matches_above_body_matches(session, raw_dir):
-    user = seed(session, raw_dir)
-    results = search(session, user_id=user.id, q="indexing")
-    assert results[0].title == "Release v2 indexing"
+def seed_field_weight_case(session, raw_dir):
+    """Two items with equal term frequency (one occurrence of "kestrel" each),
+    differing only in which field carries the term. "kestrel" appears nowhere
+    else in this file's fixtures, so no other seeded row can interfere.
+    """
+    user = User(email="w@example.com", display_name="w", created_at=NOW)
+    session.add(user)
+    session.flush()
+    source = Source(kind="rss", identifier="https://weight/feed", tier=1, config_json={}, created_at=NOW)
+    session.add(source)
+    session.flush()
+
+    # Insert the title item FIRST and the body item SECOND. `search` orders by
+    # desc(rank), desc(Item.id), so the later-inserted row has the higher id and
+    # wins any rank tie. If field weighting is broken and the ranks tie, the body
+    # item (higher id) sorts first and this test FAILS. Inserting in the other
+    # order would let the test pass on a tie, which would defeat its purpose -
+    # do not reorder these two calls.
+    upsert_items(
+        session,
+        source_id=source.id,
+        items=[
+            NormalizedItem(
+                external_id="w1",
+                url="https://w/1",
+                title="Kestrel release notes",
+                content_text="nothing relevant here",
+                published_at=NOW,
+            )
+        ],
+        owner_user_id=None,
+        raw_dir=raw_dir,
+        now=NOW,
+    )
+    upsert_items(
+        session,
+        source_id=source.id,
+        items=[
+            NormalizedItem(
+                external_id="w2",
+                url="https://w/2",
+                title="Nothing relevant",
+                content_text="kestrel appears once here",
+                published_at=NOW,
+            )
+        ],
+        owner_user_id=None,
+        raw_dir=raw_dir,
+        now=NOW,
+    )
+    return user
+
+
+def test_title_match_outranks_body_match(session, raw_dir):
+    user = seed_field_weight_case(session, raw_dir)
+    results = search(session, user_id=user.id, q="kestrel")
+    assert len(results) == 2
+    assert results[0].title == "Kestrel release notes"
