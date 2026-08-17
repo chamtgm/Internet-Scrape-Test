@@ -357,6 +357,8 @@ class ItemTag(Base):
 
 `content_tsv` is declared with `Computed(..., persisted=True)`, which tells SQLAlchemy the database maintains this column: it is never included in INSERT or UPDATE statements, but is fully usable in queries as `Item.content_tsv`. This is what lets Task 3 write the search filter in ORM terms instead of raw SQL strings.
 
+> **Amendment (applied during execution, commit `10a1f76`).** The code block above omits the three indexes that Step 13's migration creates, leaving `Base.metadata` an incomplete description of the schema — `alembic revision --autogenerate` would propose dropping all three, including the GIN index search depends on. Add `Index` and `text` to the `sqlalchemy` import list, add `Index("items_content_tsv_idx", "content_tsv", postgresql_using="gin")` and `Index("items_source_published_idx", "source_id", text("published_at DESC"))` to `Item.__table_args__`, and give `FetchRun` a `__table_args__` containing `Index("fetch_runs_source_started_idx", "source_id", text("started_at DESC"))`. Index names must match the migration exactly.
+
 - [ ] **Step 11: Create `alembic.ini`**
 
 ```ini
