@@ -1278,6 +1278,8 @@ class SubprocessRunner:
 
 > **Amendment (applied during execution, commit `f4ea3af`).** "Append below `NormalizedItem`" leaves `import subprocess`, `import httpx`, and the `typing` imports stranded mid-file — a PEP 8 E402 violation. Put all imports at the top of `base.py`; only the import statements move, `NormalizedItem` stays above the protocols.
 
+> **Amendment (applied during execution, commit `9ef08c2`).** `HttpxFetcher.get` above calls `response.raise_for_status()` without wrapping, so any non-2xx response, timeout, or connection failure escapes as an `httpx` exception from every HTTP-based adapter — breaking the contract that adapter failures arrive as `AdapterError`, which Task 7's orchestrator depends on. It is also asymmetric with `SubprocessRunner`, which already wraps non-zero exits. Wrap the whole request: `try: response = httpx.get(...); response.raise_for_status()` / `except httpx.HTTPError as exc: raise AdapterError(f"HTTP request failed for {url}: {exc}") from exc`, then `return response.text` outside the try. Catch `httpx.HTTPError` (the base class) — catching only `HTTPStatusError` would leave timeouts and connection failures escaping, which are the common case for a polling collector. Two tests were added in `tests/test_adapter_base.py`, monkeypatching `httpx.get` so the suite stays offline.
+
 - [ ] **Step 2: Create `tests/fixtures/rss_sample.xml`**
 
 ```xml
@@ -1814,6 +1816,8 @@ Run: `.venv/bin/pytest tests/test_adapter_web.py -v`
 Expected: PASS (6 passed)
 
 - [ ] **Step 7: Commit**
+
+> **Amendment (applied during execution, commit `9ef08c2`).** The registry test above asserts the key set and `tier == 1`, but because `build_registry` derives its keys from each `adapter.kind`, a mis-wired `RssAdapter(runner)` would produce an identical key set and identical tiers — the test cannot see a swapped dependency, which would otherwise fail only in production on the first collection. Add identity assertions: `assert registry["rss"]._http is http`, `assert registry["web_page"]._http is http`, `assert registry["github_repo"]._runner is runner`. Use `is`, not `isinstance` — an `isinstance` check still passes with a swapped dependency of a compatible type.
 
 ```bash
 git add -A
