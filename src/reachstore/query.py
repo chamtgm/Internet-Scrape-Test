@@ -151,6 +151,17 @@ def sources_by_tier(session: Session, tier: int) -> list[Source]:
     return list(session.execute(stmt).scalars().all())
 
 
+def get_source(session: Session, *, kind: str, identifier: str) -> Source | None:
+    """Look up a source by its natural key (kind, identifier).
+
+    Lets the CLI's `add-source` be idempotent (checking before inserting
+    rather than catching IntegrityError) without cli.py building a query
+    directly -- all SQL lives in store.py and query.py.
+    """
+    stmt = select(Source).where(Source.kind == kind, Source.identifier == identifier)
+    return session.execute(stmt).scalars().one_or_none()
+
+
 @dataclass(frozen=True)
 class SourceStatus:
     source_id: int

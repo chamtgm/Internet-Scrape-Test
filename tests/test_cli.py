@@ -42,6 +42,37 @@ def test_add_source_then_collect_then_search(session, raw_dir, monkeypatch):
     assert "hello tsvector" in result.stdout
 
 
+def test_add_source_rejects_unknown_kind(session, raw_dir, monkeypatch):
+    """F9: a typo like "rrs" for "rss" used to create a source with no
+    matching adapter, which collect_tier skips forever -- silently, with no
+    fetch_run, no output line, and no error. The only unknown-kind is
+    rejected up front, against the adapter registry so it cannot drift."""
+    monkeypatch.setattr(cli, "_session", lambda: session)
+    monkeypatch.setattr(cli, "build_default_registry", lambda: {"rss": StubAdapter()})
+
+    result = runner.invoke(cli.app, ["add-source", "rrs", "https://a/feed"])
+    assert result.exit_code != 0
+    assert "rss" in result.stdout
+    assert session.execute(select(Source)).scalars().all() == []
+
+
+def test_add_source_twice_is_idempotent(session, raw_dir, monkeypatch):
+    """F9: every other collection operation in this system is idempotent;
+    add-source previously raised a bare IntegrityError traceback on
+    uq_sources_kind_identifier when the same source was added twice."""
+    monkeypatch.setattr(cli, "_session", lambda: session)
+    monkeypatch.setattr(cli, "build_default_registry", lambda: {"rss": StubAdapter()})
+
+    first = runner.invoke(cli.app, ["add-source", "rss", "https://a/feed"])
+    assert first.exit_code == 0
+
+    second = runner.invoke(cli.app, ["add-source", "rss", "https://a/feed"])
+    assert second.exit_code == 0
+    assert "already registered" in second.stdout
+
+    assert len(session.execute(select(Source)).scalars().all()) == 1
+
+
 def test_collect_reports_failures_without_crashing(session, raw_dir, monkeypatch):
     class BrokenAdapter(StubAdapter):
         def fetch(self, identifier: str, since):

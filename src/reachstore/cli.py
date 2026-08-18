@@ -12,6 +12,7 @@ from reachstore.collect import collect_tier
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
 from reachstore.models import Source
+from reachstore.query import get_source
 from reachstore.query import search as query_search
 from reachstore.query import source_health
 
@@ -35,8 +36,26 @@ def _raw_dir() -> Path:
 
 @app.command("add-source")
 def add_source(kind: str, identifier: str, tier: int = 1) -> None:
-    """Register a source to collect from."""
+    """Register a source to collect from.
+
+    Validates `kind` against the adapter registry and is idempotent: adding
+    the same (kind, identifier) again succeeds with a message rather than
+    raising the bare IntegrityError on uq_sources_kind_identifier that an
+    unguarded insert would produce. An unknown kind (e.g. a typo like "rrs"
+    for "rss") is rejected here rather than silently creating a source that
+    collect_tier would skip forever with no adapter, no fetch_run, and no
+    error -- the only symptom being a "never run" line in `health`.
+    """
+    valid_kinds = sorted(build_default_registry().keys())
+    if kind not in valid_kinds:
+        typer.echo(f"unknown kind {kind!r}; valid kinds: {', '.join(valid_kinds)}")
+        raise typer.Exit(code=1)
+
     session = _session()
+    if get_source(session, kind=kind, identifier=identifier) is not None:
+        typer.echo(f"already registered: {kind} {identifier}")
+        return
+
     session.add(
         Source(
             kind=kind,
