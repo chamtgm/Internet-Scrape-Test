@@ -47,8 +47,11 @@ class HttpxFetcher:
     """Real HTTP fetcher. Never used in tests."""
 
     def get(self, url: str, *, timeout: int) -> str:
-        response = httpx.get(url, timeout=timeout, follow_redirects=True)
-        response.raise_for_status()
+        try:
+            response = httpx.get(url, timeout=timeout, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise AdapterError(f"HTTP request failed for {url}: {exc}") from exc
         return response.text
 
 

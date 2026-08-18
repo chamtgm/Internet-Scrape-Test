@@ -57,6 +57,10 @@ def test_empty_body_raises_adapter_error():
 
 
 def test_registry_exposes_all_tier1_kinds(http):
-    registry = build_registry(http, FakeRunner())
+    runner = FakeRunner()
+    registry = build_registry(http, runner)
     assert set(registry) == {"rss", "github_repo", "web_page"}
     assert all(adapter.tier == 1 for adapter in registry.values())
+    assert registry["rss"]._http is http
+    assert registry["web_page"]._http is http
+    assert registry["github_repo"]._runner is runner
