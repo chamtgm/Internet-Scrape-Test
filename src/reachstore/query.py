@@ -25,11 +25,44 @@ def get_item(session: Session, *, user_id: int, item_id: int) -> Item | None:
 
 
 def feed(
-    session: Session, *, user_id: int, limit: int = 50, before_id: int | None = None
+    session: Session,
+    *,
+    user_id: int,
+    limit: int = 50,
+    before_id: int | None = None,
+    before_published_at: datetime | None = None,
 ) -> list[Item]:
+    """The user's feed, ordered newest first: published_at DESC NULLS LAST, id DESC.
+
+    Paginate with a compound keyset cursor: pass `before_id` and
+    `before_published_at` taken from the last item of the previous page.
+    `before_published_at` may itself be None -- that is a legitimate cursor
+    value (the previous page's last item had no published_at, i.e. it was in
+    the NULLS LAST tail), not "no cursor". `before_id=None` means "first
+    page".
+
+    A cursor on `before_id` alone (the old behavior) is not supported: it
+    only ever matches this sort key by accident (e.g. every row sharing the
+    same published_at). In general it both duplicates and drops rows,
+    because id does not move in lockstep with published_at -- adapters
+    typically emit newest-first, so the newest item (highest published_at)
+    is inserted first and gets the *lowest* id.
+    """
     stmt = select(Item).where(visible_to(user_id))
     if before_id is not None:
-        stmt = stmt.where(Item.id < before_id)
+        if before_published_at is not None:
+            stmt = stmt.where(
+                or_(
+                    Item.published_at.is_(None),
+                    Item.published_at < before_published_at,
+                    and_(Item.published_at == before_published_at, Item.id < before_id),
+                )
+            )
+        else:
+            # The cursor row itself had a NULL published_at, i.e. it was
+            # already in the NULLS LAST tail. Only other NULL rows with a
+            # smaller id come after it.
+            stmt = stmt.where(Item.published_at.is_(None), Item.id < before_id)
     stmt = stmt.order_by(Item.published_at.desc().nulls_last(), desc(Item.id)).limit(limit)
     return list(session.execute(stmt).scalars().all())
 

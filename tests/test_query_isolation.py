@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from reachstore.adapters.base import NormalizedItem
 from reachstore.models import Source, Subscription, User
@@ -104,7 +104,7 @@ def setup_items_for_pagination(session, raw_dir):
     session.add(source)
     session.flush()
 
-    def add_shared(external_id, title):
+    def add_shared(external_id, title, published_at):
         upsert_items(
             session,
             source_id=source.id,
@@ -114,7 +114,7 @@ def setup_items_for_pagination(session, raw_dir):
                     url=f"https://pg/{external_id}",
                     title=title,
                     content_text="body",
-                    published_at=NOW,
+                    published_at=published_at,
                 )
             ],
             owner_user_id=None,
@@ -122,15 +122,17 @@ def setup_items_for_pagination(session, raw_dir):
             now=NOW,
         )
 
-    # Three shared items, then Bob's private item, then two more shared items.
-    # All share the same published_at, so `feed`'s tie-break (desc(Item.id))
-    # determines order - which also puts Bob's private item's id squarely inside
-    # the id range a before_id page would otherwise return. That makes this a
-    # real test of visible_to composing correctly with before_id, not one
-    # masking a bug in the other.
-    add_shared("p1", "page item 1")
-    add_shared("p2", "page item 2")
-    add_shared("p3", "page item 3")
+    # Inserted newest-first, as adapters do: each row's id ascends while its
+    # published_at descends. That is the exact condition under which a cursor
+    # on `id` alone diverges from a cursor on the true sort key
+    # (published_at, id) -- the two only ever coincide by accident, which a
+    # tie on published_at (the old version of this fixture) guaranteed and so
+    # hid the bug. Bob's private item is interleaved in the middle of the id
+    # range, so this also still proves visible_to composes correctly with the
+    # cursor rather than one masking a bug in the other.
+    add_shared("p1", "page item 1", NOW)
+    add_shared("p2", "page item 2", NOW - timedelta(hours=1))
+    add_shared("p3", "page item 3", NOW - timedelta(hours=2))
     upsert_items(
         session,
         source_id=source.id,
@@ -140,15 +142,15 @@ def setup_items_for_pagination(session, raw_dir):
                 url="https://pg/priv",
                 title="bob private pagination item",
                 content_text="body",
-                published_at=NOW,
+                published_at=NOW - timedelta(hours=2, minutes=30),
             )
         ],
         owner_user_id=bob.id,
         raw_dir=raw_dir,
         now=NOW,
     )
-    add_shared("p4", "page item 4")
-    add_shared("p5", "page item 5")
+    add_shared("p4", "page item 4", NOW - timedelta(hours=3))
+    add_shared("p5", "page item 5", NOW - timedelta(hours=4))
     return alice, bob
 
 
@@ -157,12 +159,115 @@ def test_feed_before_id_paginates_and_respects_isolation(session, raw_dir):
 
     full = feed(session, user_id=alice.id)
     full_titles = [item.title for item in full]
-    assert full_titles == ["page item 5", "page item 4", "page item 3", "page item 2", "page item 1"]
+    assert full_titles == ["page item 1", "page item 2", "page item 3", "page item 4", "page item 5"]
     assert "bob private pagination item" not in full_titles
 
-    cursor = next(item for item in full if item.title == "page item 4")
-    page = feed(session, user_id=alice.id, before_id=cursor.id)
+    cursor = next(item for item in full if item.title == "page item 3")
+    page = feed(
+        session,
+        user_id=alice.id,
+        before_id=cursor.id,
+        before_published_at=cursor.published_at,
+    )
     page_titles = [item.title for item in page]
-    assert page_titles == ["page item 3", "page item 2", "page item 1"]
-    assert all(item.id < cursor.id for item in page)
+    assert page_titles == ["page item 4", "page item 5"]
     assert "bob private pagination item" not in page_titles
+
+
+def test_feed_pagination_returns_every_item_exactly_once_in_order(session, raw_dir):
+    """F2: keyset pagination must use a cursor that matches the sort key
+    (published_at DESC NULLS LAST, id DESC). A cursor on `id` alone duplicates
+    and drops rows whenever id does not move in lockstep with published_at --
+    exactly the layout `setup_items_for_pagination` now creates."""
+    alice, bob = setup_items_for_pagination(session, raw_dir)
+
+    collected = []
+    before_id = None
+    before_published_at = None
+    for _ in range(10):  # safety bound; 5 items at limit=2 needs 3 pages
+        page = feed(
+            session,
+            user_id=alice.id,
+            limit=2,
+            before_id=before_id,
+            before_published_at=before_published_at,
+        )
+        if not page:
+            break
+        collected.extend(page)
+        before_id = page[-1].id
+        before_published_at = page[-1].published_at
+
+    titles = [item.title for item in collected]
+    assert titles == [
+        "page item 1",
+        "page item 2",
+        "page item 3",
+        "page item 4",
+        "page item 5",
+    ]
+    assert len(collected) == len({item.id for item in collected}), "duplicate row across pages"
+    assert "bob private pagination item" not in titles
+
+
+def test_feed_pagination_through_null_published_at_tail(session, raw_dir):
+    """F2: items with published_at IS NULL sort last (NULLS LAST) and, among
+    themselves, break ties on id DESC. The cursor must fall through to an
+    id-only comparison once the cursor row itself is in that NULL tail -- a
+    plain row-value comparison of (published_at, id) against the cursor would
+    not do this, since SQL row comparison treats a NULL component as unknown
+    rather than "sorts last"."""
+    alice = User(email="alice-null@example.com", display_name="alice-null", created_at=NOW)
+    session.add(alice)
+    session.flush()
+    source = Source(kind="rss", identifier="https://null.example.com/feed", tier=1, config_json={}, created_at=NOW)
+    session.add(source)
+    session.flush()
+
+    def add(external_id, title, published_at):
+        upsert_items(
+            session,
+            source_id=source.id,
+            items=[
+                NormalizedItem(
+                    external_id=external_id,
+                    url=f"https://null/{external_id}",
+                    title=title,
+                    content_text="body",
+                    published_at=published_at,
+                )
+            ],
+            owner_user_id=None,
+            raw_dir=raw_dir,
+            now=NOW,
+        )
+
+    # "dated item" sorts first (has a published_at). n1..n3 are all NULL and
+    # sort last, ordered purely by id DESC among themselves.
+    add("dated", "dated item", NOW)
+    add("n1", "undated 1", None)
+    add("n2", "undated 2", None)
+    add("n3", "undated 3", None)
+
+    full = feed(session, user_id=alice.id)
+    assert [i.title for i in full] == ["dated item", "undated 3", "undated 2", "undated 1"]
+
+    collected = []
+    before_id = None
+    before_published_at = None
+    for _ in range(10):  # safety bound
+        page = feed(
+            session,
+            user_id=alice.id,
+            limit=2,
+            before_id=before_id,
+            before_published_at=before_published_at,
+        )
+        if not page:
+            break
+        collected.extend(page)
+        before_id = page[-1].id
+        before_published_at = page[-1].published_at
+
+    assert [i.title for i in collected] == ["dated item", "undated 3", "undated 2", "undated 1"]
+    assert len(collected) == len({i.id for i in collected})
