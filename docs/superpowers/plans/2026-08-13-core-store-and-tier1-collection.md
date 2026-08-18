@@ -2247,6 +2247,9 @@ Expected: PASS (10 passed)
 Run: `.venv/bin/pytest -v`
 Expected: PASS (all tests from Tasks 1–7)
 
+> **Amendment (applied during execution, commits `911ea8f`, `3c14dd2`).** Three corrections to this task.
+> (1) **The reference `collect.py` above imports `sqlalchemy` and runs raw `select()`, contradicting the Global Constraint that all SQL lives in `store.py` and `query.py`.** The constraint governs — it is a project-wide invariant; the step's code is one sketch of satisfying it. Relocate the three queries into `query.py` as `recent_fetch_statuses`, `last_run_started_at`, and `sources_by_tier`, and have `collect.py` call them. Importing `Session` for a type hint is fine. (2) **`collect_source` must catch broad `Exception`, not only `AdapterError`** — adapters can leak `KeyError`/`AttributeError` on malformed upstream data, and the orchestrator is the bulkhead. Not `BaseException`: `KeyboardInterrupt` and `SystemExit` must still propagate. Record `f"{type(exc).__name__}: {exc}"` so the type survives. (3) **`collect_source` could still raise.** `upsert_items` inserts without a savepoint, so a NOT NULL violation or similar aborts the transaction; the `except` block's own `session.flush()` then raises `InFailedSqlTransaction` uncaught — defeating the bulkhead exactly when it is needed. Wrap the fetch-and-store work in `with session.begin_nested():` (the `run` row must be added and flushed *before* the savepoint so it survives rollback), and wrap the failure-recording flush in its own guard with `error_text` computed beforehand so the returned `CollectResult` always reports the failure. Also add `desc(FetchRun.id)` as a tie-breaker to both relocated `ORDER BY` clauses. Tests: 12 here, suite 60.
+
 - [ ] **Step 7: Commit**
 
 ```bash
@@ -2466,6 +2469,8 @@ Expected: PASS — all tests green
 ```
 
 Expected: a line reporting new items. This is the only step that touches the network.
+
+> **Amendment (applied during execution, commit `4fcdbd1`).** The plan never considered exit codes, so `collect` returned 0 unconditionally — a cron job could not distinguish a clean run from one where every source failed. Rule: **exit 1 only when the tier had at least one source and every one of them failed**; partial failure stays 0 (that is the bulkhead working, and the circuit breaker already handles a persistently broken source), and an empty tier stays 0. Use `if results and all(...)` — `all([])` is `True` in Python, so without the `results and` guard an empty tier would exit 1. Raise `typer.Exit(code=1)` **after** `session.commit()` and after the per-source output loop: placed earlier it would discard the failed `fetch_run` rows, and `consecutive_failures` would then return 0 forever so the circuit breaker would never trip. Document the contract in the command's help text. The brief's `test_collect_reports_failures_without_crashing` must change its assertion to `exit_code == 1`; add a mixed-outcome test asserting `exit_code == 0` with both lines printed, and a `health` test (the only command otherwise unexercised). Tests: 4 here, suite 64.
 
 - [ ] **Step 7: Commit**
 
