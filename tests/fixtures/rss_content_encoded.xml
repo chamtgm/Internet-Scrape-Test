@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Example Blog</title>
+    <link>https://example.com</link>
+    <item>
+      <title>Full article via content:encoded</title>
+      <link>https://example.com/posts/full-article</link>
+      <guid>https://example.com/posts/full-article</guid>
+      <pubDate>Tue, 12 Aug 2026 09:30:00 +0000</pubDate>
+      <description>Short teaser only.</description>
+      <content:encoded><![CDATA[<p>This is the full article body, much longer than the teaser, with substantially more detail and substance than the short description above.</p>]]></content:encoded>
+    </item>
+  </channel>
+</rss>

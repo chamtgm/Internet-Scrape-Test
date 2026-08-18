@@ -32,11 +32,18 @@ class WebPageAdapter:
     kind = "web_page"
     tier = 1
 
-    def __init__(self, http: HttpFetcher, timeout: int = 120):
+    def __init__(self, http: HttpFetcher, timeout: int = 120) -> None:
         self._http = http
         self._timeout = timeout
 
     def fetch(self, identifier: str, since: datetime | None) -> list[NormalizedItem]:
+        if not identifier.startswith(("http://", "https://")):
+            # Without this check, an empty (or otherwise malformed) identifier
+            # concatenates onto JINA_PREFIX to produce "https://r.jina.ai/",
+            # which fetches Jina's own homepage and stores it as an item with
+            # url="". github.py validates its identifier thoroughly; this was
+            # the one adapter with no validation at all.
+            raise AdapterError(f"expected an http(s) URL, got {identifier!r}")
         body = self._http.get(f"{JINA_PREFIX}{identifier}", timeout=self._timeout)
         content = _extract_content(body)
         if not content.strip():

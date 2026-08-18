@@ -56,6 +56,23 @@ def test_empty_body_raises_adapter_error():
         WebPageAdapter(FakeHttp("   ")).fetch("https://example.com/x", None)
 
 
+def test_rejects_identifier_that_is_not_an_http_url():
+    """F11: with no validation, an empty identifier concatenates onto
+    JINA_PREFIX to produce "https://r.jina.ai/", fetching Jina's own homepage
+    and storing it as an item with url="". Must reject before any I/O."""
+    http = FakeHttp("should never be reached")
+    with pytest.raises(AdapterError):
+        WebPageAdapter(http).fetch("", None)
+    assert http.calls == []
+
+
+def test_rejects_identifier_without_http_scheme():
+    http = FakeHttp("should never be reached")
+    with pytest.raises(AdapterError):
+        WebPageAdapter(http).fetch("example.com/x", None)
+    assert http.calls == []
+
+
 def test_registry_exposes_all_tier1_kinds(http):
     runner = FakeRunner()
     registry = build_registry(http, runner)

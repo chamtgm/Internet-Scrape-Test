@@ -37,6 +37,24 @@ class CommandRunner(Protocol):
 
 @runtime_checkable
 class Adapter(Protocol):
+    """One platform's collection logic. This is Plan 3's primary extension point.
+
+    Contract that `collect.py` relies on:
+
+    - Failures raise `AdapterError` and nothing else. `collect_source` treats
+      any other exception as a bug to isolate, not an expected failure mode
+      -- wrap platform-specific exceptions (HTTP errors, subprocess failures,
+      malformed upstream data) as `AdapterError` inside `fetch`.
+    - An empty result returns `[]` rather than raising. "Nothing new to
+      report" is not a failure.
+    - `published_at` on every returned `NormalizedItem` is timezone-aware UTC,
+      or `None` if the upstream source has no timestamp for that item. Never
+      a naive datetime.
+    - `since` is advisory. Adapters may use it to filter or paginate, or
+      ignore it entirely; the orchestrator does not depend on it being
+      honored, and today's orchestrator always passes `None` (see F1).
+    """
+
     kind: str
     tier: int
 
@@ -59,7 +77,17 @@ class SubprocessRunner:
     """Real command runner for upstream CLIs installed by agent-reach. Never used in tests."""
 
     def run(self, args: list[str], *, timeout: int) -> str:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        command = " ".join(args)
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise AdapterError(f"{command} timed out after {timeout}s") from exc
+        except FileNotFoundError as exc:
+            # Must be caught before OSError, of which it is a subclass, to give
+            # a message specific to the missing-binary case.
+            raise AdapterError(f"{command} failed: command not found") from exc
+        except OSError as exc:
+            raise AdapterError(f"{command} failed: {exc}") from exc
         if result.returncode != 0:
             raise AdapterError(f"{args[0]} failed ({result.returncode}): {result.stderr.strip()}")
         return result.stdout

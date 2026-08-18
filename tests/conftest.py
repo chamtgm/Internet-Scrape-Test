@@ -1,10 +1,12 @@
 import os
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import Engine, text
+from sqlalchemy.orm import Session
 
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
@@ -42,7 +44,7 @@ def _guard_test_database(test_url: str, primary_url: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def engine(test_database_url: str):
+def engine(test_database_url: str) -> Generator[Engine, None, None]:
     _guard_test_database(test_database_url, get_settings().database_url)
     eng = make_engine(test_database_url)
     with eng.begin() as conn:
@@ -56,7 +58,7 @@ def engine(test_database_url: str):
 
 
 @pytest.fixture
-def session(engine):
+def session(engine: Engine) -> Generator[Session, None, None]:
     """Each test runs inside a transaction that is rolled back afterwards."""
     connection = engine.connect()
     transaction = connection.begin()

@@ -39,7 +39,10 @@ def test_maps_fields_correctly(adapter):
     assert first.author_handle == "editor@example.com (Sam Rivers)"
     assert first.published_at == datetime(2026, 8, 12, 9, 30, tzinfo=UTC)
     assert "full-text search" in first.content_text
-    assert first.raw["link"] == "https://example.com/posts/tsvector"
+    # F6: raw stores the true upstream feed bytes (not feedparser's parsed
+    # dict), per item, alongside the id needed to locate this entry in it.
+    assert first.raw["entry_id"] == "https://example.com/posts/tsvector"
+    assert "<title>Understanding tsvector</title>" in first.raw["feed_xml"]
 
 
 def test_since_filters_older_entries(adapter):
@@ -75,3 +78,15 @@ def test_empty_but_valid_feed_returns_no_items(fixtures_dir):
     adapter = RssAdapter(FakeHttp((fixtures_dir / "rss_empty.xml").read_text()))
     items = adapter.fetch("https://example.com/feed", None)
     assert items == []
+
+
+def test_prefers_content_encoded_over_summary_teaser(fixtures_dir):
+    """F5: <description> is a teaser; <content:encoded> (feedparser's
+    entry.content) is the full article body for WordPress/Substack/Ghost/etc.
+    Full-text search is the product's core feature, so the adapter must index
+    the full body when both are present, not the teaser."""
+    adapter = RssAdapter(FakeHttp((fixtures_dir / "rss_content_encoded.xml").read_text()))
+    items = adapter.fetch("https://example.com/feed", None)
+    assert len(items) == 1
+    assert "full article body" in items[0].content_text
+    assert "Short teaser only" not in items[0].content_text

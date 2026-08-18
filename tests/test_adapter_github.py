@@ -77,3 +77,25 @@ def test_non_list_json_raises_adapter_error():
     runner = FakeRunner('{"message": "Not Found", "status": "404"}')
     with pytest.raises(AdapterError):
         GithubRepoAdapter(runner).fetch("octo/repo", None)
+
+
+def test_release_missing_id_raises_adapter_error_not_key_error():
+    """F3: `str(release["id"])` raised a bare KeyError on a malformed release,
+    breaking every adapter's promise that failures surface as AdapterError."""
+    runner = FakeRunner('[{"tag_name": "v1.0.0", "published_at": "2026-08-01T00:00:00Z"}]')
+    with pytest.raises(AdapterError):
+        GithubRepoAdapter(runner).fetch("octo/repo", None)
+
+
+def test_naive_published_at_is_treated_as_utc():
+    """F8: datetime.fromisoformat on an offset-free timestamp returns a naive
+    datetime, violating the Global Constraint that timestamps are
+    timezone-aware UTC. GitHub always sends `Z` today, but the parser must
+    not depend on that."""
+    runner = FakeRunner(
+        '[{"id": 1, "tag_name": "v1.0.0", "published_at": "2026-08-01T00:00:00", '
+        '"html_url": "https://github.com/octo/repo/releases/tag/v1.0.0"}]'
+    )
+    item = GithubRepoAdapter(runner).fetch("octo/repo", None)[0]
+    assert item.published_at == datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+    assert item.published_at.tzinfo is not None
