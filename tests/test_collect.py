@@ -11,7 +11,7 @@ from reachstore.collect import (
     consecutive_failures,
     should_attempt,
 )
-from reachstore.models import FetchRun, Item, Source, User
+from reachstore.models import FetchRun, Item, Source
 from reachstore.query import source_health
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
@@ -218,8 +218,6 @@ def test_force_overrides_the_circuit_breaker(session, raw_dir):
 
 
 def test_source_health_reports_attention_state(session, raw_dir):
-    user = User(email="u@example.com", display_name="u", created_at=NOW)
-    session.add(user)
     source = add_source(session)
     session.flush()
     for index in range(5):
@@ -235,7 +233,7 @@ def test_source_health_reports_attention_state(session, raw_dir):
             )
         )
     session.flush()
-    statuses = source_health(session, user_id=user.id)
+    statuses = source_health(session)
     assert len(statuses) == 1
     assert statuses[0].consecutive_failures == 5
     assert statuses[0].needs_attention is True

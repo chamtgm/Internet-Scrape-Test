@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from reachstore.adapters.base import NormalizedItem
 from reachstore.models import Source, User
-from reachstore.query import search
+from reachstore.query import MAX_LIMIT, _clamp_limit, search
 from reachstore.store import upsert_items
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
@@ -80,6 +80,42 @@ def test_search_filters_by_since(session, raw_dir):
     user = seed(session, raw_dir)
     results = search(session, user_id=user.id, q="roast", since=NOW - timedelta(days=1))
     assert results == []
+
+
+def test_clamp_limit_boundaries():
+    """F7: `LIMIT -1` raises a Postgres error and there is no upper bound
+    otherwise. Direct check of the clamp math at its three edges."""
+    assert _clamp_limit(0) == 1
+    assert _clamp_limit(-1) == 1
+    assert _clamp_limit(-1000) == 1
+    assert _clamp_limit(1) == 1
+    assert _clamp_limit(MAX_LIMIT) == MAX_LIMIT
+    assert _clamp_limit(MAX_LIMIT + 1) == MAX_LIMIT
+    assert _clamp_limit(10_000_000) == MAX_LIMIT
+
+
+def test_search_with_negative_limit_does_not_raise_and_still_returns_a_result(session, raw_dir):
+    """F7 integration proof: `LIMIT -1` is a genuine Postgres error. Both
+    "indexing" items in `seed` match this query, so an unclamped limit=-1
+    would raise before this even had a chance to return a row count."""
+    user = seed(session, raw_dir)
+    results = search(session, user_id=user.id, q="indexing", limit=-1)
+    assert len(results) == 1
+
+
+def test_search_with_zero_limit_still_returns_a_result(session, raw_dir):
+    """limit=0 is valid SQL (LIMIT 0 -> zero rows) so it does not raise even
+    unclamped, but zero results for a query with real matches is a bug in
+    its own right worth guarding against."""
+    user = seed(session, raw_dir)
+    results = search(session, user_id=user.id, q="indexing", limit=0)
+    assert len(results) == 1
+
+
+def test_search_with_huge_limit_is_capped(session, raw_dir):
+    user = seed(session, raw_dir)
+    results = search(session, user_id=user.id, q="indexing", limit=10_000_000)
+    assert len(results) <= MAX_LIMIT
 
 
 def seed_field_weight_case(session, raw_dir):

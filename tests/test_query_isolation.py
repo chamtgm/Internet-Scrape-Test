@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from reachstore.adapters.base import NormalizedItem
 from reachstore.models import Source, Subscription, User
-from reachstore.query import feed, get_item, search
+from reachstore.query import MAX_LIMIT, feed, get_item, search
 from reachstore.store import upsert_items
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
@@ -271,3 +271,24 @@ def test_feed_pagination_through_null_published_at_tail(session, raw_dir):
 
     assert [i.title for i in collected] == ["dated item", "undated 3", "undated 2", "undated 1"]
     assert len(collected) == len({i.id for i in collected})
+
+
+def test_feed_with_negative_limit_does_not_raise_and_still_returns_a_result(session, raw_dir):
+    """F7: `LIMIT -1` is a genuine Postgres error. setup_items_for_pagination
+    gives alice 5 visible items, so an unclamped limit=-1 would raise before
+    this had any chance to return a row count."""
+    alice, bob = setup_items_for_pagination(session, raw_dir)
+    results = feed(session, user_id=alice.id, limit=-1)
+    assert len(results) == 1
+
+
+def test_feed_with_zero_limit_still_returns_a_result(session, raw_dir):
+    alice, bob = setup_items_for_pagination(session, raw_dir)
+    results = feed(session, user_id=alice.id, limit=0)
+    assert len(results) == 1
+
+
+def test_feed_with_huge_limit_is_capped(session, raw_dir):
+    alice, bob = setup_items_for_pagination(session, raw_dir)
+    results = feed(session, user_id=alice.id, limit=10_000_000)
+    assert len(results) <= MAX_LIMIT

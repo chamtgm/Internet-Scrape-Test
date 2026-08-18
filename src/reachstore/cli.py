@@ -98,10 +98,11 @@ def search(
 
 
 @app.command()
-def health(user_id: int = typer.Option(..., "--user-id")) -> None:
-    """Show per-source collection health."""
+def health() -> None:
+    """Show per-source collection health. A global operator view: sources
+    have no owner, so this is not scoped to any user."""
     session = _session()
-    for status in source_health(session, user_id=user_id):
+    for status in source_health(session):
         flag = "NEEDS ATTENTION" if status.needs_attention else status.last_status or "never run"
         typer.echo(f"[{flag}] {status.kind} {status.identifier} (failures: {status.consecutive_failures})")
 

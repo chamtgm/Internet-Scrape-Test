@@ -85,11 +85,14 @@ def test_collect_exits_zero_when_some_sources_succeed(session, raw_dir, monkeypa
 
 
 def test_health_lists_source_status(session, raw_dir, monkeypatch):
+    """F4: health is a global operator view with no per-user scoping -- the
+    old --user-id option looked like tenant isolation but was ignored by
+    source_health, so it was removed rather than left misleading."""
     session.add(Source(kind="rss", identifier="https://a/feed", tier=1, config_json={}, created_at=NOW))
     session.flush()
 
     monkeypatch.setattr(cli, "_session", lambda: session)
 
-    result = runner.invoke(cli.app, ["health", "--user-id", "1"])
+    result = runner.invoke(cli.app, ["health"])
     assert result.exit_code == 0
     assert "https://a/feed" in result.stdout

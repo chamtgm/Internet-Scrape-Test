@@ -9,6 +9,19 @@ from sqlalchemy.orm import Session
 
 from reachstore.models import FetchRun, Item, Source, Subscription
 
+MAX_LIMIT = 200
+
+
+def _clamp_limit(limit: int) -> int:
+    """Clamp a caller-supplied limit into [1, MAX_LIMIT].
+
+    `LIMIT -1` raises a Postgres error and there is no upper bound otherwise.
+    Clamped here, in the query layer -- the single documented point of truth
+    for reads -- rather than at each call site, so it protects every caller
+    including ones that don't exist yet (e.g. a future HTTP query parameter).
+    """
+    return max(1, min(limit, MAX_LIMIT))
+
 
 def visible_to(user_id: int) -> ColumnElement[bool]:
     """The one and only tenant-isolation predicate.
@@ -63,7 +76,10 @@ def feed(
             # already in the NULLS LAST tail. Only other NULL rows with a
             # smaller id come after it.
             stmt = stmt.where(Item.published_at.is_(None), Item.id < before_id)
-    stmt = stmt.order_by(Item.published_at.desc().nulls_last(), desc(Item.id)).limit(limit)
+    stmt = (
+        stmt.order_by(Item.published_at.desc().nulls_last(), desc(Item.id))
+        .limit(_clamp_limit(limit))
+    )
     return list(session.execute(stmt).scalars().all())
 
 
@@ -99,7 +115,7 @@ def search(
             ),
         )
 
-    stmt = stmt.where(*conditions).order_by(desc(rank), desc(Item.id)).limit(limit)
+    stmt = stmt.where(*conditions).order_by(desc(rank), desc(Item.id)).limit(_clamp_limit(limit))
     return list(session.execute(stmt).scalars().all())
 
 
@@ -146,8 +162,25 @@ class SourceStatus:
     needs_attention: bool
 
 
-def source_health(session: Session, *, user_id: int) -> list[SourceStatus]:
-    """Derive per-source health from fetch_runs. Nothing here is stored state."""
+def source_health(session: Session) -> list[SourceStatus]:
+    """Global operator view of every source's collection health.
+
+    Deliberately not scoped to a user. Sources have no owner -- content is
+    shared and interest is per-user via `subscriptions` -- so returning every
+    source is a defensible operator view. It is deliberately NOT filtered by
+    `subscriptions` either: that table has no write path yet, so scoping by
+    it would return an empty list in any real deployment and this command
+    would appear broken.
+
+    This function used to take (and ignore) a `user_id` parameter, which
+    looked like tenant isolation but was not: source identifiers are not
+    innocuous (a private RSS feed URL can carry a token; a `github_repo`
+    identifier can name a private repo), so exposing this to anything but an
+    operator requires adding real per-user scoping first, once subscriptions
+    have a write path.
+
+    Derives everything from fetch_runs; nothing here is stored state.
+    """
     # Local import: a module-level import here would create a cycle, because
     # `collect` imports `query` (for recent_fetch_statuses, last_run_started_at,
     # and sources_by_tier).
