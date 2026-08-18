@@ -52,7 +52,14 @@ def add_source(kind: str, identifier: str, tier: int = 1) -> None:
 
 @app.command()
 def collect(tier: int = 1, force: bool = False) -> None:
-    """Collect every source in a tier."""
+    """Collect every source in a tier.
+
+    Exit code: 0 if the tier was empty or at least one source succeeded
+    (a single failing source is expected and tolerated by the circuit
+    breaker); 1 if the tier had at least one source and every one of them
+    failed, which usually means something systemic is wrong (database
+    unreachable, network down, credentials expired) and a human should look.
+    """
     session = _session()
     results = collect_tier(
         session,
@@ -69,6 +76,8 @@ def collect(tier: int = 1, force: bool = False) -> None:
         else:
             typer.echo(f"source {result.source_id}: failed — {result.error_text}")
     typer.echo(f"{len(results)} source(s) processed")
+    if results and all(result.status == "failed" for result in results):
+        raise typer.Exit(code=1)
 
 
 @app.command()

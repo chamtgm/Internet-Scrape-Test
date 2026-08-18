@@ -55,6 +55,41 @@ def test_collect_reports_failures_without_crashing(session, raw_dir, monkeypatch
     monkeypatch.setattr(cli, "build_default_registry", lambda: {"rss": BrokenAdapter()})
 
     result = runner.invoke(cli.app, ["collect", "--tier", "1"])
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "failed" in result.stdout
     assert "upstream exploded" in result.stdout
+
+
+def test_collect_exits_zero_when_some_sources_succeed(session, raw_dir, monkeypatch):
+    class BrokenAdapter:
+        kind = "atom"
+        tier = 1
+
+        def fetch(self, identifier: str, since):
+            raise RuntimeError("upstream exploded")
+
+    session.add(Source(kind="rss", identifier="https://a/feed", tier=1, config_json={}, created_at=NOW))
+    session.add(Source(kind="atom", identifier="https://b/feed", tier=1, config_json={}, created_at=NOW))
+    session.flush()
+
+    monkeypatch.setattr(cli, "_session", lambda: session)
+    monkeypatch.setattr(cli, "_raw_dir", lambda: raw_dir)
+    monkeypatch.setattr(
+        cli, "build_default_registry", lambda: {"rss": StubAdapter(), "atom": BrokenAdapter()}
+    )
+
+    result = runner.invoke(cli.app, ["collect", "--tier", "1"])
+    assert result.exit_code == 0
+    assert "failed" in result.stdout
+    assert "1 new" in result.stdout
+
+
+def test_health_lists_source_status(session, raw_dir, monkeypatch):
+    session.add(Source(kind="rss", identifier="https://a/feed", tier=1, config_json={}, created_at=NOW))
+    session.flush()
+
+    monkeypatch.setattr(cli, "_session", lambda: session)
+
+    result = runner.invoke(cli.app, ["health", "--user-id", "1"])
+    assert result.exit_code == 0
+    assert "https://a/feed" in result.stdout
