@@ -23,7 +23,8 @@ class GithubRepoAdapter:
         self._timeout = timeout
 
     def fetch(self, identifier: str, since: datetime | None) -> list[NormalizedItem]:
-        if identifier.count("/") != 1:
+        owner, _, repo = identifier.partition("/")
+        if not owner or not repo or identifier.count("/") != 1:
             raise AdapterError(f"expected 'owner/repo', got {identifier!r}")
 
         raw = self._runner.run(
@@ -33,6 +34,11 @@ class GithubRepoAdapter:
             releases = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise AdapterError(f"gh returned unparseable JSON for {identifier}: {exc}") from exc
+
+        if not isinstance(releases, list):
+            raise AdapterError(
+                f"expected a JSON array from gh for {identifier}, got {type(releases).__name__}"
+            )
 
         items: list[NormalizedItem] = []
         for release in releases:

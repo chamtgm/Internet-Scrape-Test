@@ -48,10 +48,32 @@ def test_since_filters_older_releases(runner):
 
 
 def test_rejects_identifier_without_owner():
+    runner = FakeRunner("[]")
     with pytest.raises(AdapterError):
-        GithubRepoAdapter(FakeRunner("[]")).fetch("repo-only", None)
+        GithubRepoAdapter(runner).fetch("repo-only", None)
+    assert runner.calls == []
+
+
+def test_rejects_identifier_with_empty_owner():
+    runner = FakeRunner("[]")
+    with pytest.raises(AdapterError):
+        GithubRepoAdapter(runner).fetch("/repo", None)
+    assert runner.calls == []
+
+
+def test_rejects_identifier_with_empty_repo():
+    runner = FakeRunner("[]")
+    with pytest.raises(AdapterError):
+        GithubRepoAdapter(runner).fetch("owner/", None)
+    assert runner.calls == []
 
 
 def test_invalid_json_raises_adapter_error():
     with pytest.raises(AdapterError):
         GithubRepoAdapter(FakeRunner("not json")).fetch("octo/repo", None)
+
+
+def test_non_list_json_raises_adapter_error():
+    runner = FakeRunner('{"message": "Not Found", "status": "404"}')
+    with pytest.raises(AdapterError):
+        GithubRepoAdapter(runner).fetch("octo/repo", None)
