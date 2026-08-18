@@ -62,7 +62,11 @@ def collect_source(
     now: datetime,
     owner_user_id: int | None = None,
 ) -> CollectResult:
-    """Fetch one source. Never raises: failures are recorded and returned.
+    """Fetch one source. Never raises for failures encountered while doing this
+    source's work: whether the adapter blows up, or upsert_items hits a database
+    error while writing malformed data (e.g. a NOT NULL violation from an item with
+    a missing required field), the failure is recorded as a failed fetch_run and
+    returned as a failed CollectResult instead of propagating.
 
     Catches broad Exception (not only AdapterError) because adapters can leak
     exceptions other than AdapterError on malformed upstream data (a KeyError on a
@@ -70,6 +74,18 @@ def collect_source(
     the bulkhead and must not depend on every adapter being perfectly well-behaved.
     KeyboardInterrupt and SystemExit are BaseException subclasses, not Exception, so
     they still propagate.
+
+    The fetch-and-store work runs inside a SAVEPOINT (session.begin_nested()):
+    a database-level error aborts the enclosing Postgres transaction, so without
+    the savepoint the flush that records the failure below would itself raise
+    against that aborted transaction, escaping this function. Recording the
+    failure is itself wrapped so that even if persisting the failed run fails,
+    this function still returns a failed CollectResult rather than raising.
+
+    Not guarded: creating the initial "running" fetch_run row below, before any
+    adapter or store code runs. A failure there means the database itself is
+    unreachable -- an infrastructure precondition, not a per-source data problem --
+    and is out of scope for this function's isolation.
     """
     run = FetchRun(
         source_id=source.id, started_at=now, status="running", items_found=0, items_new=0
@@ -78,22 +94,31 @@ def collect_source(
     session.flush()
 
     try:
-        since = query.last_run_started_at(session, source.id, "success")
-        items = adapter.fetch(source.identifier, since)
-        new_count = upsert_items(
-            session,
-            source_id=source.id,
-            items=items,
-            owner_user_id=owner_user_id,
-            raw_dir=raw_dir,
-            now=now,
-        )
+        # SAVEPOINT: a DB error inside this block must not poison the outer
+        # transaction, which is still needed below to record the failure.
+        with session.begin_nested():
+            since = query.last_run_started_at(session, source.id, "success")
+            items = adapter.fetch(source.identifier, since)
+            new_count = upsert_items(
+                session,
+                source_id=source.id,
+                items=items,
+                owner_user_id=owner_user_id,
+                raw_dir=raw_dir,
+                now=now,
+            )
     except Exception as exc:  # bulkhead: one source must never abort the run
         error_text = f"{type(exc).__name__}: {exc}"
-        run.status = "failed"
-        run.finished_at = now
-        run.error_text = error_text
-        session.flush()
+        try:
+            run.status = "failed"
+            run.finished_at = now
+            run.error_text = error_text
+            session.flush()
+        except Exception:
+            # Recording the failure itself failed. The bulkhead must still not
+            # raise -- report the original failure via the returned CollectResult
+            # even though it could not be persisted to fetch_runs.
+            pass
         return CollectResult(source.id, "failed", 0, 0, error_text)
 
     run.status = "success"

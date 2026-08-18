@@ -79,7 +79,7 @@ def recent_fetch_statuses(session: Session, source_id: int, limit: int) -> list[
     stmt = (
         select(FetchRun.status)
         .where(FetchRun.source_id == source_id)
-        .order_by(desc(FetchRun.started_at))
+        .order_by(desc(FetchRun.started_at), desc(FetchRun.id))
         .limit(limit)
     )
     return list(session.execute(stmt).scalars().all())
@@ -90,7 +90,7 @@ def last_run_started_at(session: Session, source_id: int, status: str) -> dateti
     stmt = (
         select(FetchRun.started_at)
         .where(FetchRun.source_id == source_id, FetchRun.status == status)
-        .order_by(desc(FetchRun.started_at))
+        .order_by(desc(FetchRun.started_at), desc(FetchRun.id))
         .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
@@ -115,6 +115,9 @@ class SourceStatus:
 
 def source_health(session: Session, *, user_id: int) -> list[SourceStatus]:
     """Derive per-source health from fetch_runs. Nothing here is stored state."""
+    # Local import: a module-level import here would create a cycle, because
+    # `collect` imports `query` (for recent_fetch_statuses, last_run_started_at,
+    # and sources_by_tier).
     from reachstore.collect import FAILURE_LIMIT, consecutive_failures
 
     sources = session.execute(select(Source).order_by(Source.id)).scalars().all()

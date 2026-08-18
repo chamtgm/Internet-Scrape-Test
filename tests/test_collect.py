@@ -244,3 +244,38 @@ def test_collect_tier_isolates_non_adapter_error_and_continues_with_next_source(
         select(FetchRun).where(FetchRun.source_id == good.id)
     ).scalars().one()
     assert good_run.status == "success"
+
+
+def test_collect_tier_survives_a_poisoned_transaction_from_a_malformed_item(session, raw_dir):
+    """A malformed item (url=None) passes NormalizedItem's dataclass with no runtime
+    validation, then hits a genuine Postgres NOT NULL violation inside upsert_items.
+    That violation aborts the database transaction. Without a savepoint around the
+    fetch-and-store work, the flush that records the failed run would itself raise
+    against the aborted transaction (PendingRollbackError), escaping collect_source
+    and defeating the bulkhead. This proves the run is still recorded as failed and
+    a subsequent source in the same collect_tier call still succeeds."""
+    bad = add_source(session, kind="rss", identifier="https://bad/feed", tier=1)
+    good = add_source(session, kind="web_page", identifier="https://good/page", tier=1)
+    poisoned_item = NormalizedItem(external_id="1", url=None, title="t", content_text="body")
+    registry = {
+        "rss": StubAdapter("rss", [poisoned_item]),
+        "web_page": StubAdapter("web_page", one_item()),
+    }
+
+    results = collect_tier(session, tier=1, registry=registry, raw_dir=raw_dir, now=NOW)
+
+    assert [r.source_id for r in results] == [bad.id, good.id]
+    assert results[0].status == "failed"
+    assert results[0].error_text is not None
+    assert results[1].status == "success"
+
+    bad_run = session.execute(
+        select(FetchRun).where(FetchRun.source_id == bad.id)
+    ).scalars().one()
+    assert bad_run.status == "failed"
+    assert bad_run.error_text is not None
+
+    good_run = session.execute(
+        select(FetchRun).where(FetchRun.source_id == good.id)
+    ).scalars().one()
+    assert good_run.status == "success"
