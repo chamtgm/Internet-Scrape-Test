@@ -1,0 +1,8 @@
+Title: How residential IPs affect scraping
+
+URL Source: https://example.com/articles/residential-ips
+
+Markdown Content:
+Datacenter address ranges are registered publicly, so platforms can classify
+traffic before inspecting it. Requests from hosting providers face tighter
+limits than requests from consumer ISPs.
