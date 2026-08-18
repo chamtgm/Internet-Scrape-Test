@@ -24,9 +24,11 @@ class StubAdapter:
         self._items = items or []
         self._error = error
         self.calls = 0
+        self.received_since = "unset"
 
     def fetch(self, identifier: str, since):
         self.calls += 1
+        self.received_since = since
         if self._error is not None:
             raise self._error
         return self._items
@@ -54,6 +56,31 @@ def test_successful_collection_stores_items_and_records_run(session, raw_dir):
     assert run.status == "success"
     assert run.items_new == 1
     assert run.finished_at is not None
+
+
+def test_collect_source_never_passes_a_since_watermark_to_the_adapter(session, raw_dir):
+    """F1: passing the last successful run's start_at as `since` causes items
+    that only appear in the upstream feed after that run (feed lag) to be
+    skipped forever, silently. Seed a successful fetch_run first so this test
+    would fail against the old code, which passed that run's started_at as
+    `since` on every subsequent collection."""
+    source = add_source(session)
+    session.add(
+        FetchRun(
+            source_id=source.id,
+            started_at=NOW - timedelta(hours=1),
+            finished_at=NOW - timedelta(hours=1),
+            status="success",
+            items_found=1,
+            items_new=1,
+        )
+    )
+    session.flush()
+
+    adapter = StubAdapter("rss", one_item())
+    collect_source(session, source=source, adapter=adapter, raw_dir=raw_dir, now=NOW)
+
+    assert adapter.received_since is None
 
 
 def test_failing_adapter_records_failed_run_and_does_not_raise(session, raw_dir):

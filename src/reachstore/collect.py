@@ -97,8 +97,19 @@ def collect_source(
         # SAVEPOINT: a DB error inside this block must not poison the outer
         # transaction, which is still needed below to record the failure.
         with session.begin_nested():
-            since = query.last_run_started_at(session, source.id, "success")
-            items = adapter.fetch(source.identifier, since)
+            # F1: always pass None as `since`. The watermark used to be the
+            # last successful run's start time, but feed lag means an item
+            # published before that run can still be missing from the
+            # upstream feed at the moment the run executes, and only appear
+            # afterward -- under the old logic such an item was skipped on
+            # that run and every run after it, permanently and silently.
+            # Re-seeing old items is idempotent (ON CONFLICT DO NOTHING) and
+            # costs only a few skipped round-trips, a trade worth making
+            # against permanent silent data loss. `since` stays a parameter
+            # on Adapter.fetch and every adapter for Plan 3's paginated
+            # Tier-2/3 adapters, whose callers will derive it from actually
+            # stored data rather than a run timestamp.
+            items = adapter.fetch(source.identifier, None)
             new_count = upsert_items(
                 session,
                 source_id=source.id,
