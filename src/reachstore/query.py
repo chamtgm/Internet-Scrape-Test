@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import ColumnElement, and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
-from reachstore.models import Item, Source, Subscription
+from reachstore.models import FetchRun, Item, Source, Subscription
 
 
 def visible_to(user_id: int) -> ColumnElement[bool]:
@@ -67,3 +68,75 @@ def search(
 
     stmt = stmt.where(*conditions).order_by(desc(rank), desc(Item.id)).limit(limit)
     return list(session.execute(stmt).scalars().all())
+
+
+def recent_fetch_statuses(session: Session, source_id: int, limit: int) -> list[str]:
+    """Statuses of a source's most recent fetch_runs, newest first.
+
+    Used by collect.py to derive the consecutive-failure streak without collect.py
+    touching SQL directly.
+    """
+    stmt = (
+        select(FetchRun.status)
+        .where(FetchRun.source_id == source_id)
+        .order_by(desc(FetchRun.started_at))
+        .limit(limit)
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
+def last_run_started_at(session: Session, source_id: int, status: str) -> datetime | None:
+    """started_at of the most recent fetch_run for a source with the given status."""
+    stmt = (
+        select(FetchRun.started_at)
+        .where(FetchRun.source_id == source_id, FetchRun.status == status)
+        .order_by(desc(FetchRun.started_at))
+        .limit(1)
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def sources_by_tier(session: Session, tier: int) -> list[Source]:
+    """Sources belonging to a tier, in stable id order."""
+    stmt = select(Source).where(Source.tier == tier).order_by(Source.id)
+    return list(session.execute(stmt).scalars().all())
+
+
+@dataclass(frozen=True)
+class SourceStatus:
+    source_id: int
+    kind: str
+    identifier: str
+    last_status: str | None
+    last_run_at: datetime | None
+    consecutive_failures: int
+    needs_attention: bool
+
+
+def source_health(session: Session, *, user_id: int) -> list[SourceStatus]:
+    """Derive per-source health from fetch_runs. Nothing here is stored state."""
+    from reachstore.collect import FAILURE_LIMIT, consecutive_failures
+
+    sources = session.execute(select(Source).order_by(Source.id)).scalars().all()
+
+    statuses: list[SourceStatus] = []
+    for source in sources:
+        last = session.execute(
+            select(FetchRun)
+            .where(FetchRun.source_id == source.id)
+            .order_by(desc(FetchRun.started_at))
+            .limit(1)
+        ).scalars().one_or_none()
+        failures = consecutive_failures(session, source.id)
+        statuses.append(
+            SourceStatus(
+                source_id=source.id,
+                kind=source.kind,
+                identifier=source.identifier,
+                last_status=last.status if last else None,
+                last_run_at=last.started_at if last else None,
+                consecutive_failures=failures,
+                needs_attention=failures >= FAILURE_LIMIT,
+            )
+        )
+    return statuses
