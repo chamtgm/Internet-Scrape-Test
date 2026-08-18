@@ -1610,10 +1610,12 @@ class GithubRepoAdapter:
         return items
 ```
 
+> **Amendment (applied during execution, commit `0ada09b`).** Two robustness gaps in the reference implementation above. (1) `identifier.count("/") != 1` accepts `"/repo"` and `"owner/"`, building `repos//repo/releases`. Validate both segments — `owner, _, repo = identifier.partition("/")` then `if not owner or not repo or identifier.count("/") != 1: raise AdapterError(...)`; keep the `count` clause or `"a/b/c"` starts passing, since `partition` splits on the first slash only. (2) `for release in releases` has no shape check, so a JSON object rather than an array (an API error body, a schema change) iterates the dict's keys and raises `AttributeError` — violating the contract that every adapter signals failure as `AdapterError`, which Task 7's orchestrator relies on. Add `if not isinstance(releases, list): raise AdapterError(...)` after `json.loads` and before the loop; it must be `isinstance`, not a truthiness check, or a legitimately empty `[]` would be rejected. Three tests were added and one strengthened with `assert runner.calls == []`, bringing this task to 9 tests and the suite to 39.
+
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_adapter_github.py -v`
-Expected: PASS (6 passed)
+Expected: PASS (6 passed; 9 after the amendment above)
 
 - [ ] **Step 6: Commit**
 
