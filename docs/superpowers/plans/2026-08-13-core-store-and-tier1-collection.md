@@ -357,6 +357,8 @@ class ItemTag(Base):
 
 `content_tsv` is declared with `Computed(..., persisted=True)`, which tells SQLAlchemy the database maintains this column: it is never included in INSERT or UPDATE statements, but is fully usable in queries as `Item.content_tsv`. This is what lets Task 3 write the search filter in ORM terms instead of raw SQL strings.
 
+> **Amendment (applied during execution, commit `10a1f76`).** The code block above omits the three indexes that Step 13's migration creates, leaving `Base.metadata` an incomplete description of the schema — `alembic revision --autogenerate` would propose dropping all three, including the GIN index search depends on. Add `Index` and `text` to the `sqlalchemy` import list, add `Index("items_content_tsv_idx", "content_tsv", postgresql_using="gin")` and `Index("items_source_published_idx", "source_id", text("published_at DESC"))` to `Item.__table_args__`, and give `FetchRun` a `__table_args__` containing `Index("fetch_runs_source_started_idx", "source_id", text("started_at DESC"))`. Index names must match the migration exactly.
+
 - [ ] **Step 11: Create `alembic.ini`**
 
 ```ini
@@ -899,10 +901,12 @@ def upsert_items(
     return inserted
 ```
 
+> **Amendment (applied during execution, commit `c5b097c`).** The `_write_raw` above names the file after `content_hash(item.content_text)`, so two items from the same source with identical content collide: the second write silently overwrites the first, while the first row's `raw_path` still points at that file. Calling `_write_raw` before the insert also writes files for rows that `ON CONFLICT` then skips. Fix: name the file `Path(str(source_id)) / f"{content_hash(item.external_id)}.json"`, change `_write_raw` to take that precomputed relative path (`_write_raw(raw_dir: Path, relative: Path, raw: dict[str, Any]) -> None`), and call it only inside the successful-insert branch. `Item.content_hash` still stores the *content* digest — only the filename changes. Two regression tests were added, bringing this task to 7 tests.
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_store.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (5 passed; 7 after the amendment above)
 
 - [ ] **Step 6: Commit**
 
@@ -1106,6 +1110,8 @@ def test_search_ranks_title_matches_above_body_matches(session, raw_dir):
 
 The last test relies on the `setweight(..., 'A')` on titles from Task 1's migration.
 
+> **Amendment (applied during execution, commit `eaa632d`).** `test_search_ranks_title_matches_above_body_matches` above does **not** isolate what it claims. Its fixture confounds field weighting with term frequency: "Release v2 indexing" carries the term in both title and body (2 occurrences) while "Postgres full text search" carries it only in the body (1). Measured against the live database, the expected row wins with `setweight` (0.608 vs 0.243) *and* without it — so the test would pass even if `setweight` were removed from the schema. Replace it with `test_title_match_outranks_body_match`: seed two items on one source using a term appearing nowhere else in the file (`kestrel`), one occurrence each, differing only in which field carries it — `title="Kestrel release notes"`/`content_text="nothing relevant here"` and `title="Nothing relevant"`/`content_text="kestrel appears once here"`. **Insert the title item first and the body item second**, so the `desc(Item.id)` tie-breaker points away from the expected answer and a rank tie fails the test; unweighted, the two rank identically at 0.0608. Two further tests were added in the same round: `before_id` pagination (with a private item id placed inside the paginated range, proving isolation holds within a page) and `kinds` + `subscribed_only` combined. This task's total is 11 tests, and the full suite is 21.
+
 - [ ] **Step 3: Run both test files to verify they fail**
 
 Run: `.venv/bin/pytest tests/test_query_isolation.py tests/test_query_search.py -v`
@@ -1145,7 +1151,7 @@ def feed(
     stmt = select(Item).where(visible_to(user_id))
     if before_id is not None:
         stmt = stmt.where(Item.id < before_id)
-    stmt = stmt.order_by(desc(Item.published_at.nulls_last()), desc(Item.id)).limit(limit)
+    stmt = stmt.order_by(Item.published_at.desc().nulls_last(), desc(Item.id)).limit(limit)
     return list(session.execute(stmt).scalars().all())
 
 
@@ -1269,6 +1275,10 @@ class SubprocessRunner:
             raise AdapterError(f"{args[0]} failed ({result.returncode}): {result.stderr.strip()}")
         return result.stdout
 ```
+
+> **Amendment (applied during execution, commit `f4ea3af`).** "Append below `NormalizedItem`" leaves `import subprocess`, `import httpx`, and the `typing` imports stranded mid-file — a PEP 8 E402 violation. Put all imports at the top of `base.py`; only the import statements move, `NormalizedItem` stays above the protocols.
+
+> **Amendment (applied during execution, commit `9ef08c2`).** `HttpxFetcher.get` above calls `response.raise_for_status()` without wrapping, so any non-2xx response, timeout, or connection failure escapes as an `httpx` exception from every HTTP-based adapter — breaking the contract that adapter failures arrive as `AdapterError`, which Task 7's orchestrator depends on. It is also asymmetric with `SubprocessRunner`, which already wraps non-zero exits. Wrap the whole request: `try: response = httpx.get(...); response.raise_for_status()` / `except httpx.HTTPError as exc: raise AdapterError(f"HTTP request failed for {url}: {exc}") from exc`, then `return response.text` outside the try. Catch `httpx.HTTPError` (the base class) — catching only `HTTPStatusError` would leave timeouts and connection failures escaping, which are the common case for a polling collector. Two tests were added in `tests/test_adapter_base.py`, monkeypatching `httpx.get` so the suite stays offline.
 
 - [ ] **Step 2: Create `tests/fixtures/rss_sample.xml`**
 
@@ -1420,10 +1430,12 @@ class RssAdapter:
         return items
 ```
 
+> **Amendment (applied during execution, commit `f4ea3af`).** `if not feed.entries: raise AdapterError(...)` above conflates two different situations — feedparser returns zero entries both for a garbage body *and* for a well-formed feed with no `<item>` elements yet. A brand-new blog would raise on every cycle and, once Task 7's circuit breaker exists, disable itself after five. Distinguish them with feedparser's own signal: `if not feed.entries: if feed.bozo: raise AdapterError(f"could not parse {identifier}: {feed.bozo_exception}"); return []`. Measured values — garbage body `bozo == 1`, valid empty feed `bozo == False`. Three tests were added in the same round (non-zero UTC offset converts correctly, an undated entry survives a `since` filter, an empty valid feed returns `[]`), bringing this task to 9 tests and the suite to 30.
+
 - [ ] **Step 6: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_adapter_rss.py -v`
-Expected: PASS (6 passed)
+Expected: PASS (6 passed; 9 after the amendment above)
 
 - [ ] **Step 7: Commit**
 
@@ -1600,10 +1612,12 @@ class GithubRepoAdapter:
         return items
 ```
 
+> **Amendment (applied during execution, commit `0ada09b`).** Two robustness gaps in the reference implementation above. (1) `identifier.count("/") != 1` accepts `"/repo"` and `"owner/"`, building `repos//repo/releases`. Validate both segments — `owner, _, repo = identifier.partition("/")` then `if not owner or not repo or identifier.count("/") != 1: raise AdapterError(...)`; keep the `count` clause or `"a/b/c"` starts passing, since `partition` splits on the first slash only. (2) `for release in releases` has no shape check, so a JSON object rather than an array (an API error body, a schema change) iterates the dict's keys and raises `AttributeError` — violating the contract that every adapter signals failure as `AdapterError`, which Task 7's orchestrator relies on. Add `if not isinstance(releases, list): raise AdapterError(...)` after `json.loads` and before the loop; it must be `isinstance`, not a truthiness check, or a legitimately empty `[]` would be rejected. Three tests were added and one strengthened with `assert runner.calls == []`, bringing this task to 9 tests and the suite to 39.
+
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `.venv/bin/pytest tests/test_adapter_github.py -v`
-Expected: PASS (6 passed)
+Expected: PASS (6 passed; 9 after the amendment above)
 
 - [ ] **Step 6: Commit**
 
@@ -1802,6 +1816,8 @@ Run: `.venv/bin/pytest tests/test_adapter_web.py -v`
 Expected: PASS (6 passed)
 
 - [ ] **Step 7: Commit**
+
+> **Amendment (applied during execution, commit `9ef08c2`).** The registry test above asserts the key set and `tier == 1`, but because `build_registry` derives its keys from each `adapter.kind`, a mis-wired `RssAdapter(runner)` would produce an identical key set and identical tiers — the test cannot see a swapped dependency, which would otherwise fail only in production on the first collection. Add identity assertions: `assert registry["rss"]._http is http`, `assert registry["web_page"]._http is http`, `assert registry["github_repo"]._runner is runner`. Use `is`, not `isinstance` — an `isinstance` check still passes with a swapped dependency of a compatible type.
 
 ```bash
 git add -A
@@ -2231,6 +2247,9 @@ Expected: PASS (10 passed)
 Run: `.venv/bin/pytest -v`
 Expected: PASS (all tests from Tasks 1–7)
 
+> **Amendment (applied during execution, commits `911ea8f`, `3c14dd2`).** Three corrections to this task.
+> (1) **The reference `collect.py` above imports `sqlalchemy` and runs raw `select()`, contradicting the Global Constraint that all SQL lives in `store.py` and `query.py`.** The constraint governs — it is a project-wide invariant; the step's code is one sketch of satisfying it. Relocate the three queries into `query.py` as `recent_fetch_statuses`, `last_run_started_at`, and `sources_by_tier`, and have `collect.py` call them. Importing `Session` for a type hint is fine. (2) **`collect_source` must catch broad `Exception`, not only `AdapterError`** — adapters can leak `KeyError`/`AttributeError` on malformed upstream data, and the orchestrator is the bulkhead. Not `BaseException`: `KeyboardInterrupt` and `SystemExit` must still propagate. Record `f"{type(exc).__name__}: {exc}"` so the type survives. (3) **`collect_source` could still raise.** `upsert_items` inserts without a savepoint, so a NOT NULL violation or similar aborts the transaction; the `except` block's own `session.flush()` then raises `InFailedSqlTransaction` uncaught — defeating the bulkhead exactly when it is needed. Wrap the fetch-and-store work in `with session.begin_nested():` (the `run` row must be added and flushed *before* the savepoint so it survives rollback), and wrap the failure-recording flush in its own guard with `error_text` computed beforehand so the returned `CollectResult` always reports the failure. Also add `desc(FetchRun.id)` as a tie-breaker to both relocated `ORDER BY` clauses. Tests: 12 here, suite 60.
+
 - [ ] **Step 7: Commit**
 
 ```bash
@@ -2450,6 +2469,8 @@ Expected: PASS — all tests green
 ```
 
 Expected: a line reporting new items. This is the only step that touches the network.
+
+> **Amendment (applied during execution, commit `4fcdbd1`).** The plan never considered exit codes, so `collect` returned 0 unconditionally — a cron job could not distinguish a clean run from one where every source failed. Rule: **exit 1 only when the tier had at least one source and every one of them failed**; partial failure stays 0 (that is the bulkhead working, and the circuit breaker already handles a persistently broken source), and an empty tier stays 0. Use `if results and all(...)` — `all([])` is `True` in Python, so without the `results and` guard an empty tier would exit 1. Raise `typer.Exit(code=1)` **after** `session.commit()` and after the per-source output loop: placed earlier it would discard the failed `fetch_run` rows, and `consecutive_failures` would then return 0 forever so the circuit breaker would never trip. Document the contract in the command's help text. The brief's `test_collect_reports_failures_without_crashing` must change its assertion to `exit_code == 1`; add a mixed-outcome test asserting `exit_code == 0` with both lines printed, and a `health` test (the only command otherwise unexercised). Tests: 4 here, suite 64.
 
 - [ ] **Step 7: Commit**
 

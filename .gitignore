@@ -1,2 +1,13 @@
 .DS_Store
 .superpowers/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+node_modules/
