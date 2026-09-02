@@ -1,10 +1,10 @@
 # reachstore — Architecture
 
-**Living document.** Updated as the system changes. Last updated 2026-08-31.
+**Living document.** Updated as the system changes. Last updated 2026-09-02.
 
 A persistent knowledge store: it collects content from other sites, stores it raw, and searches it at query time. Built on [Agent-Reach](https://github.com/Panniantong/Agent-Reach), which supplies installation and credentials for the upstream tools; reachstore supplies the persistence Agent-Reach lacks.
 
-**Status:** Plan 1 (core store + Tier-1 collection) is shipped and running. The web UI and JSON API are designed and about to be built. Plans for collectors and deployment remain unwritten.
+**Status:** Plan 1 (core store + Tier-1 collection) and the web UI and JSON API are shipped and running. Plans for collectors and deployment remain unwritten.
 
 ---
 
@@ -21,7 +21,7 @@ Two consequences run through the whole design: ingestion must be *idempotent* (s
 Each layer depends only on those below it.
 
 ```
-        cli.py            api/  (planned)          ← entrypoints; the only clock readers
+        cli.py            api/                     ← entrypoints; the only clock readers
           │                 │
           └────────┬────────┘
                    ▼
@@ -55,9 +55,9 @@ These are enforced, not aspirational. Every one was verified tree-wide by the Pl
 
 **The tenant predicate appears in exactly one function.** `query.visible_to(user_id)` returns `owner_user_id IS NULL OR owner_user_id = :user_id`. `get_item`, `feed`, and `search` all call it; none re-expresses it. This is the security boundary of a multi-tenant store, and a second copy is how it erodes.
 
-**No wall-clock reads outside entrypoints.** Every function needing the current time takes `now: datetime`. Only `cli.py` — and, once built, `api/routes.py` — calls `datetime.now(UTC)`. This is what makes backoff testable at exact boundaries rather than by sleeping.
+**No wall-clock reads outside entrypoints.** Every function needing the current time takes `now: datetime`. Only `cli.py` and the `api/` package call `datetime.now(UTC)` — inside `api/`, that's `collect_runner.py` alone; `routes.py` itself reads no clock. This is what makes backoff testable at exact boundaries rather than by sleeping.
 
-**No network access in tests.** Every external call goes through an injected `HttpFetcher` or `CommandRunner`; tests supply fakes backed by committed fixtures. 86 tests run in 1.5 seconds against real Postgres with the network unplugged.
+**No network access in tests.** Every external call goes through an injected `HttpFetcher` or `CommandRunner`; tests supply fakes backed by committed fixtures. 116 tests run in under 2 seconds against real Postgres with the network unplugged.
 
 **Every collection operation is idempotent.** Enforced by the database — `uq_items_source_external` plus `ON CONFLICT DO NOTHING` — never by an application-level existence check, which would lose the race between two concurrent collectors.
 
@@ -132,19 +132,23 @@ The contract is documented on the protocol itself, because Plan 3 hands it to ad
 
 The subtle part: a database-level failure inside `upsert_items` aborts the transaction, after which the handler's own `flush()` would raise too. So the fetch-and-store work runs inside `session.begin_nested()` (a SAVEPOINT); a failure rolls back to it and leaves the session usable for recording the failure. The `fetch_run` row is created *before* the savepoint so it survives the rollback.
 
+**`collect_tier` commits after every source, not once at the end of the tier.** Two reasons: progress must be observable while a tier is still running, and a crash mid-tier must keep the failure rows the circuit breaker depends on rather than lose them with an uncommitted transaction. The commit itself is inside the bulkhead — if it fails, the source's result is rewritten from whatever `collect_source` returned to a failure, so the caller never sees a success claim for work the rollback just discarded.
+
 **Backoff and circuit breaker are derived, not stored.** There is no `consecutive_failures` column to drift out of sync — health is computed from `fetch_runs` history on demand. Failures back off exponentially from 15 minutes, capped at 24 hours; five consecutive failures open the breaker. `--force` bypasses both gates, which is how an operator retries a disabled source.
 
 **Exit codes.** `collect` exits 1 only when the tier had at least one source and *every* one failed. Partial failure exits 0 — that is the bulkhead working, and alerting on one flaky source would make the signal worthless.
 
 ---
 
-## 7. Web layer (planned)
+## 7. Web layer
 
-Designed in `docs/superpowers/specs/2026-08-31-web-ui-and-api-design.md`; not yet built.
+FastAPI over the existing store — five endpoints (`GET /api/sources`, `GET /api/feed`, `GET /api/search`, `GET /api/items/{id}`, `POST /api/collect`), no SQL of its own; `query.py` remains the only reader. A React + Vite reader in `web/`: a feed pane, search, item detail, and a health strip showing each source's status and error text. No authentication in this slice; the server refuses to bind off-loopback without an explicit override.
 
-FastAPI over the existing store — five endpoints, no SQL of its own. A React + Vite two-pane reader: item list left, full stored text right. No authentication in this slice; the server refuses to bind off-loopback without an explicit override.
+`api/deps.py` is a second composition root. Its **module-level engine** (`lru_cache`d) is the one deliberate difference from `cli.py`: a fresh pool per request, built the way `cli.py` builds one per invocation, would exhaust Postgres connections under a server's request rate. `DEFAULT_USER_ID` is defined once there and passed to every `query` call, so the tenant-isolation path stays exercised and Plan 2 replaces a constant rather than threading a new parameter through every call site. `app.assert_loopback` enforces the loopback restriction rather than documenting it — with no authentication, the network boundary is the only access control there is.
 
-Two points of note. `api/deps.py` becomes a second composition root with a **module-level engine**, because `cli.py`'s per-call `make_engine` would exhaust the connection pool under a server's request rate. And `DEFAULT_USER_ID` is defined once and passed to every `query` call, so the tenant path stays exercised and Plan 2 replaces a constant rather than threading a new parameter through every call site.
+`POST /api/collect` runs a tier as a FastAPI background task. `collect_runner.try_start()` claims a single in-process run slot synchronously, in the request handler, before the task is scheduled; a second request while one is in flight gets a truthful 409 rather than a background task racing another `collect_tier` over the same connection.
+
+**`collecting`, not a `fetch_runs` read, is the completion signal.** `GET /api/sources` reports `collect_runner.is_running()` directly. It cannot be derived from run status instead: `collect_tier` commits only terminal statuses (§6), so a `running` row is flushed and then overwritten before any commit ever lands — no second connection observes it mid-run. A poll asking "is anything still running?" via `fetch_runs` would see nothing on its first tick and wrongly declare the run finished. The frontend polls `/api/sources` while a run is in flight and stops on the tick where `collecting` goes false.
 
 ---
 
@@ -156,10 +160,17 @@ cp .env.example .env
 uv venv --python 3.12 .venv                          # system python is 3.9
 uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/alembic upgrade head
-.venv/bin/pytest                                     # 86 tests, ~1.5s, offline
+.venv/bin/pytest                                     # 116 tests, ~1.8s, offline
 ```
 
 `TEST_DATABASE_URL` must differ from `DATABASE_URL` and end in `_test`; `conftest.py` refuses to drop a schema otherwise, because it runs `DROP SCHEMA public CASCADE` on every session.
+
+Running the app takes both servers; Vite proxies `/api` to FastAPI so the browser stays same-origin:
+
+```bash
+.venv/bin/python -c "from reachstore.api.app import serve; serve()"   # :8000
+cd web && npm run dev                                                 # :5173, proxies /api to :8000
+```
 
 ---
 
@@ -172,5 +183,7 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 **Derived state over stored counters.** A mutable counter is a second copy of a fact the history already contains, and every write path must remember to update it correctly. One missed path and the counter silently disagrees with reality.
 
 **Content-hash identity for web pages.** A page has no natural item id and no reliable date. Hashing the extracted content means an unchanged page conflicts and inserts nothing, while a changed page inserts one new row and keeps the old version as history.
+
+**An in-process flag over inferring completion from `fetch_runs`.** The obvious design reads run status to know whether a collection is still going. It doesn't work here: `collect_tier` only ever commits terminal statuses, so no query against `fetch_runs` can observe a run in progress. `collect_runner` tracks it directly with a `threading.Lock`-guarded flag instead — correct because this slice is single-worker by design; multiple uvicorn workers would each get their own copy and need a Postgres advisory lock in its place.
 
 **The record of how this was built** — every review finding, ruling, and rationale across 8 tasks and 10 review rounds — is in `docs/superpowers/reviews/`.
