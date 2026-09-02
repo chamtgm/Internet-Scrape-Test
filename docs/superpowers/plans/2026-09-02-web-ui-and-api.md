@@ -466,10 +466,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class SourceStatusOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source_id: int
     kind: str
     identifier: str
@@ -506,7 +508,7 @@ def list_sources(session: Session = Depends(get_session)) -> SourcesResponse:
     return SourcesResponse(sources=[SourceStatusOut(**vars(s)) for s in statuses])
 ```
 
-`vars(s)` works because `SourceStatus` is a plain frozen dataclass whose field names match `SourceStatusOut` exactly. If a field is added to one and not the other, Pydantic raises at construction instead of silently dropping it.
+`vars(s)` works because `SourceStatus` is a plain frozen dataclass whose field names match `SourceStatusOut` exactly. The `extra="forbid"` config is what makes that a guarantee rather than a hope: Pydantic v2 defaults to `extra="ignore"`, under which a field *added* to `SourceStatus` with no counterpart here would be silently dropped from the API response — no error, no failing test. Forbidding extras makes both drift directions raise at construction. Scope it to this model only; the others are built with explicit keyword arguments and do not need it.
 
 - [ ] **Step 8: Create `src/reachstore/api/app.py`**
 
