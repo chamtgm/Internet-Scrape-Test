@@ -1893,6 +1893,8 @@ cd web && npm install -D @playwright/test
 
 Browsers are already installed on this machine. Do not run `npx playwright install`.
 
+Pin the version rather than taking `@latest`: the newest release may target a Chromium revision that is not in the local cache, and the failure (`browserType.launch: Executable doesn't exist`) does not name that as the cause. Whatever version you land on, record the recovery command — `npx playwright install chromium` — in `web/README.md`, so a fresh clone is not left guessing.
+
 - [ ] **Step 2: Write the seed script**
 
 Create `web/tests/seed_e2e.py`:
@@ -1933,11 +1935,14 @@ RAW_DIR = Path("data/raw-e2e")
 def main() -> None:
     settings = get_settings()
     url = settings.test_database_url
-    # Same guard as conftest.py: never touch a database that is not clearly
-    # the test one. This script migrates and writes; pointing it at the
-    # development database would be destructive.
+    # Both of conftest.py's guards, not just one: the database must be named
+    # like a test database AND must not be the primary one. This script
+    # migrates and writes, so pointing it at the development database would
+    # be destructive.
     if not url or not url.endswith("_test"):
         raise SystemExit("TEST_DATABASE_URL must be set and end in '_test'. Refusing to seed.")
+    if url == settings.database_url:
+        raise SystemExit("TEST_DATABASE_URL must differ from DATABASE_URL. Refusing to seed.")
 
     os.environ["ALEMBIC_DATABASE_URL"] = url
     command.upgrade(Config("alembic.ini"), "head")
