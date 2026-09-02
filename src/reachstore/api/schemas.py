@@ -30,3 +30,34 @@ class SourceStatusOut(BaseModel):
 
 class SourcesResponse(BaseModel):
     sources: list[SourceStatusOut]
+
+
+class ItemSummary(BaseModel):
+    id: int
+    title: str | None
+    url: str
+    author_handle: str | None
+    published_at: datetime | None
+    source_id: int
+    source_kind: str
+    source_identifier: str
+    excerpt: str
+
+
+class ItemDetail(ItemSummary):
+    content_text: str
+    fetched_at: datetime
+
+
+class Cursor(BaseModel):
+    published_at: datetime | None
+    id: int
+
+
+class FeedResponse(BaseModel):
+    items: list[ItemSummary]
+    next_cursor: Cursor | None
+
+
+class SearchResponse(BaseModel):
+    items: list[ItemSummary]
