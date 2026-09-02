@@ -160,7 +160,7 @@ cp .env.example .env
 uv venv --python 3.12 .venv                          # system python is 3.9
 uv pip install --python .venv/bin/python -e ".[dev]"
 .venv/bin/alembic upgrade head
-.venv/bin/pytest                                     # 116 tests, ~1.8s, offline
+.venv/bin/pytest                                     # 116 tests, under 2s, offline
 ```
 
 `TEST_DATABASE_URL` must differ from `DATABASE_URL` and end in `_test`; `conftest.py` refuses to drop a schema otherwise, because it runs `DROP SCHEMA public CASCADE` on every session.
@@ -183,6 +183,8 @@ cd web && npm run dev                                                 # :5173, p
 **Derived state over stored counters.** A mutable counter is a second copy of a fact the history already contains, and every write path must remember to update it correctly. One missed path and the counter silently disagrees with reality.
 
 **Content-hash identity for web pages.** A page has no natural item id and no reliable date. Hashing the extracted content means an unchanged page conflicts and inserts nothing, while a changed page inserts one new row and keeps the old version as history.
+
+**No CORS anywhere.** Vite proxies `/api` to FastAPI in development; FastAPI serves the built `web/dist` assets in production. Both keep the browser same-origin, so no CORS middleware exists in the codebase at all. If one is ever added, that is a sign a second origin has entered the picture — not a piece that was missing from this one.
 
 **An in-process flag over inferring completion from `fetch_runs`.** The obvious design reads run status to know whether a collection is still going. It doesn't work here: `collect_tier` only ever commits terminal statuses, so no query against `fetch_runs` can observe a run in progress. `collect_runner` tracks it directly with a `threading.Lock`-guarded flag instead — correct because this slice is single-worker by design; multiple uvicorn workers would each get their own copy and need a Postgres advisory lock in its place.
 
