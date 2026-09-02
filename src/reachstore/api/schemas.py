@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SourceStatusOut(BaseModel):
@@ -30,6 +30,18 @@ class SourceStatusOut(BaseModel):
 
 class SourcesResponse(BaseModel):
     sources: list[SourceStatusOut]
+    collecting: bool = False
+
+
+class CollectRequest(BaseModel):
+    tier: int = Field(..., ge=1, le=3)
+    force: bool = False
+
+
+class CollectResponse(BaseModel):
+    started: bool
+    tier: int | None = None
+    reason: str | None = None
 
 
 class ItemSummary(BaseModel):

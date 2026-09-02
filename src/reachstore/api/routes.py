@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from reachstore import query
+from reachstore.api import collect_runner
 from reachstore.api.deps import DEFAULT_USER_ID, get_session
 from reachstore.api.schemas import (
+    CollectRequest,
+    CollectResponse,
     Cursor,
     FeedResponse,
     ItemDetail,
@@ -26,7 +29,23 @@ EXCERPT_CHARS = 240
 @router.get("/sources", response_model=SourcesResponse)
 def list_sources(session: Session = Depends(get_session)) -> SourcesResponse:
     statuses = query.source_health(session)
-    return SourcesResponse(sources=[SourceStatusOut(**vars(s)) for s in statuses])
+    return SourcesResponse(
+        sources=[SourceStatusOut(**vars(s)) for s in statuses],
+        collecting=collect_runner.is_running(),
+    )
+
+
+@router.post("/collect", response_model=CollectResponse, status_code=202)
+def post_collect(
+    body: CollectRequest, background: BackgroundTasks, response: Response
+) -> CollectResponse:
+    if collect_runner.is_running():
+        response.status_code = 409
+        return CollectResponse(
+            started=False, reason="a collection run is already in progress"
+        )
+    background.add_task(collect_runner.run_collection, body.tier, body.force)
+    return CollectResponse(started=True, tier=body.tier)
 
 
 def _summary(item: Item) -> ItemSummary:
