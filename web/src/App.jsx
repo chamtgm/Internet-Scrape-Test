@@ -30,9 +30,28 @@ export default function App() {
   // silently dropped instead of corrupting whatever is now on screen.
   const requestIdRef = useRef(0)
 
+  // Same ordering-guard shape as requestIdRef, for the two async writers of
+  // `sources`/`collecting` (refreshSources and the poll below) -- without
+  // it a slow refreshSources response landing after a newer poll tick could
+  // overwrite it with stale data.
+  const sourcesIdRef = useRef(0)
+
+  // Mirrors `searching` for the poll effect below: that effect only
+  // re-runs when `collecting` changes, so its closure would otherwise see
+  // whatever `searching` was when the run started, not whether the user
+  // searched *during* the run.
+  const searchingRef = useRef(false)
+
+  // Own counter, separate from requestIdRef: `select` fires on every row
+  // click, far more often than feed/search/loadMore. Sharing requestIdRef
+  // would let a detail click cancel an in-flight loadFeed/search/loadMore
+  // write by superseding its generation.
+  const selectIdRef = useRef(0)
+
   const fail = (e) => setError(String(e))
 
   const loadFeed = useCallback(() => {
+    searchingRef.current = false
     setSearching(false)
     setError(null)
     const reqId = ++requestIdRef.current
@@ -44,12 +63,15 @@ export default function App() {
       .catch((e) => { if (requestIdRef.current === reqId) fail(e) })
   }, [])
 
-  const refreshSources = useCallback(
-    () => fetchSources()
-      .then((r) => { setSources(r.sources); setCollecting(r.collecting) })
-      .catch(fail),
-    []
-  )
+  const refreshSources = useCallback(() => {
+    const reqId = ++sourcesIdRef.current
+    return fetchSources()
+      .then((r) => {
+        if (sourcesIdRef.current !== reqId) return
+        setSources(r.sources); setCollecting(r.collecting)
+      })
+      .catch(fail)
+  }, [])
 
   // Reading `collecting` from the server rather than only from local state
   // means a page reload during a run picks the progress view back up.
@@ -59,9 +81,10 @@ export default function App() {
     if (!collecting) return
     let cancelled = false
     const id = setInterval(async () => {
+      const reqId = ++sourcesIdRef.current
       try {
         const r = await fetchSources()
-        if (cancelled) return
+        if (cancelled || sourcesIdRef.current !== reqId) return
         // Per-source rows update as each source commits (Task 4), so the
         // health strip fills in progressively. `collecting` is the server's
         // own flag -- run status cannot be used, because collect_tier only
@@ -69,20 +92,18 @@ export default function App() {
         setSources(r.sources)
         if (!r.collecting) {
           setCollecting(false)
-          loadFeed()
+          // Only replace the list with the full feed when the user isn't
+          // looking at search results -- otherwise a run finishing while a
+          // search is active silently discards it. Refreshing sources above
+          // is enough to end the progress view either way.
+          if (!searchingRef.current) loadFeed()
         }
       } catch (e) {
-        if (!cancelled) { setError(String(e)); setCollecting(false) }
+        if (!cancelled && sourcesIdRef.current === reqId) { setError(String(e)); setCollecting(false) }
       }
     }, 2000)
     return () => { cancelled = true; clearInterval(id) }
   }, [collecting, loadFeed])
-
-  // Own counter, separate from requestIdRef: `select` fires on every row
-  // click, far more often than feed/search/loadMore. Sharing requestIdRef
-  // would let a detail click cancel an in-flight loadFeed/search/loadMore
-  // write by superseding its generation.
-  const selectIdRef = useRef(0)
 
   const select = (id) => {
     setError(null)
@@ -93,6 +114,7 @@ export default function App() {
   }
 
   const search = (q) => {
+    searchingRef.current = true
     setSearching(true)
     setError(null)
     const reqId = ++requestIdRef.current

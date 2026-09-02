@@ -16,6 +16,36 @@ test('the feed lists items and clicking one opens its full text', async ({ page 
   await expect(detail).toBeVisible()
   await expect(page.locator('.detail-title')).toContainText('Smoke test article 0')
   expect((await detail.innerText()).length).toBeGreaterThan(240)
+  // Safe path: an ordinary http(s) URL still renders as a real link.
+  await expect(page.locator('.detail-title a')).toHaveAttribute('href', 'https://e2e/0')
+})
+
+test('an item with a javascript: URL renders its title as plain text, not a link', async ({ page }) => {
+  // seed_e2e.py's fixture is asserted elsewhere as an exact 12 items/1
+  // source (README.md), so a hostile item is injected here by mocking the
+  // item-detail response instead of adding a 13th seeded row.
+  await page.route('**/api/items/*', (route) =>
+    route.fulfill({
+      json: {
+        id: 999999,
+        title: 'Hostile item',
+        url: 'javascript:alert(1)',
+        author_handle: null,
+        published_at: null,
+        source_id: 1,
+        source_kind: 'rss',
+        source_identifier: 'https://e2e/feed',
+        excerpt: 'hostile',
+        content_text: 'hostile content',
+        fetched_at: '2026-09-02T12:00:00Z',
+      },
+    })
+  )
+  await page.goto('/')
+  await page.locator('.item-row').first().click()
+
+  await expect(page.locator('.detail-title')).toContainText('Hostile item')
+  await expect(page.locator('.detail-title a')).toHaveCount(0)
 })
 
 test('searching narrows the list and clearing restores it', async ({ page }) => {

@@ -229,6 +229,10 @@ def source_health(session: Session) -> list[SourceStatus]:
                 consecutive_failures=failures,
                 needs_attention=failures >= FAILURE_LIMIT,
                 error_text=last.error_text if last else None,
+                # Global, unfiltered count -- consistent with this whole
+                # function being an operator view, not a per-user one. Under
+                # real users (Plan 2) this would report items other users
+                # hold under a shared source, not just this user's own.
                 item_count=counts.get(source.id, 0),
             )
         )

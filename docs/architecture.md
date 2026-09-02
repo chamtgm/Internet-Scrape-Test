@@ -172,6 +172,9 @@ Running the app takes both servers; Vite proxies `/api` to FastAPI so the browse
 cd web && npm run dev                                                 # :5173, proxies /api to :8000
 ```
 
+`serve()` is the supported entrypoint because `assert_loopback` (§7) lives there -- invoking uvicorn
+directly bypasses the guard and can bind off-loopback with no authentication in front of it.
+
 ---
 
 ## 9. Decisions worth knowing
@@ -188,4 +191,9 @@ cd web && npm run dev                                                 # :5173, p
 
 **An in-process flag over inferring completion from `fetch_runs`.** The obvious design reads run status to know whether a collection is still going. It doesn't work here: `collect_tier` only ever commits terminal statuses, so no query against `fetch_runs` can observe a run in progress. `collect_runner` tracks it directly with a `threading.Lock`-guarded flag instead — correct because this slice is single-worker by design; multiple uvicorn workers would each get their own copy and need a Postgres advisory lock in its place.
 
-**The record of how this was built** — every review finding, ruling, and rationale across 8 tasks and 10 review rounds — is in `docs/superpowers/reviews/`.
+**The record of how this was built** is split by plan, both in `docs/superpowers/reviews/`. Plan 1
+(core store + Tier-1 collection) — every review finding, ruling, and rationale across 8 tasks and
+10 review rounds — is `2026-08-13-core-store-execution-ledger.md` plus `task-1-report.md` through
+`task-8-report.md`. The web UI and API layer's equivalent, across its 10 tasks, is
+`2026-09-02-web-ui-and-api-progress.md` plus `2026-09-02-web-ui-and-api-task-1-report.md` through
+`2026-09-02-web-ui-and-api-task-10-report.md`.

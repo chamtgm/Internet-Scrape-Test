@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from pydantic import AwareDatetime
 from sqlalchemy.orm import Session
 
 from reachstore import query
@@ -77,8 +76,8 @@ def _summary(item: Item) -> ItemSummary:
 @router.get("/feed", response_model=FeedResponse)
 def get_feed(
     session: Session = Depends(get_session),
-    limit: int = Query(50, ge=1, le=200),
-    before_published_at: datetime | None = None,
+    limit: int = Query(50, ge=1, le=query.MAX_LIMIT),
+    before_published_at: AwareDatetime | None = None,
     before_id: int | None = None,
 ) -> FeedResponse:
     """One page of the feed, newest first.
@@ -107,7 +106,7 @@ def get_feed(
 def get_search(
     q: str = Query(..., min_length=1),
     kind: str | None = None,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=query.MAX_LIMIT),
     session: Session = Depends(get_session),
 ) -> SearchResponse:
     items = query.search(
