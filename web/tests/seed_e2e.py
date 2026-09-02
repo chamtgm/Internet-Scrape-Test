@@ -33,11 +33,13 @@ RAW_DIR = Path("data/raw-e2e")
 def main() -> None:
     settings = get_settings()
     url = settings.test_database_url
-    # Same guard as conftest.py: never touch a database that is not clearly
-    # the test one. This script migrates and writes; pointing it at the
-    # development database would be destructive.
+    # Same two guards as conftest.py's _guard_test_database: never touch a
+    # database that is not clearly the test one. This script migrates and
+    # writes; pointing it at the development database would be destructive.
     if not url or not url.endswith("_test"):
         raise SystemExit("TEST_DATABASE_URL must be set and end in '_test'. Refusing to seed.")
+    if url == settings.database_url:
+        raise SystemExit("TEST_DATABASE_URL must differ from DATABASE_URL. Refusing to seed.")
 
     os.environ["ALEMBIC_DATABASE_URL"] = url
     command.upgrade(Config("alembic.ini"), "head")

@@ -1,6 +1,16 @@
 import fs from 'node:fs'
 import { defineConfig } from '@playwright/test'
 
+// @playwright/test is pinned to 1.61.1 in package.json (not a caret range
+// left to float) because that is the newest release whose bundled
+// playwright-core expects Chromium revision 1228, the revision already
+// cached in ~/Library/Caches/ms-playwright on dev machines here. A bare
+// `npm install -D @playwright/test` grabs latest, which can want a newer
+// revision that isn't cached and fails with "Executable doesn't exist".
+// Bumping this version is fine, but run `npx playwright install chromium`
+// (or confirm the target revision is already cached) when you do. See
+// web/README.md's "End-to-end test" section for the recovery steps.
+
 // The API reads its URL from settings, which prefer a real environment
 // variable over .env. Point DATABASE_URL at the test database so the smoke
 // test asserts against seeded data rather than whatever the dev database
