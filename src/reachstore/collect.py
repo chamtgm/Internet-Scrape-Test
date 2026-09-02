@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -167,12 +167,27 @@ def collect_tier(
             # a reader sees runs land one at a time and a crash mid-tier keeps
             # the failures the circuit breaker depends on.
             session.commit()
-        except Exception:
+        except Exception as exc:
             # The bulkhead extends to the commit. Letting a commit failure
             # escape would abort the whole tier -- the exact failure mode
             # per-source isolation exists to prevent. Roll back so the session
-            # is usable for the next source; if the database is genuinely gone,
-            # every remaining source records a failure and `collect` exits 1
-            # through the existing all-sources-failed path.
+            # is usable again. This only covers a commit failure the database
+            # itself survives: rollback() expires the identity map, so on the
+            # next loop iteration merely reading an attribute (e.g.
+            # source.kind, source.id) off the next Source triggers a refresh
+            # query outside this try and outside collect_source's bulkhead --
+            # if the database is actually gone, that query raises and aborts
+            # the tier.
             session.rollback()
+            # The result was already appended as a success/failure from
+            # collect_source, but that work was just discarded by the
+            # rollback -- replace it so the caller (and the CLI's all-failed
+            # exit path) sees what actually landed: nothing.
+            results[-1] = replace(
+                results[-1],
+                status="failed",
+                items_found=0,
+                items_new=0,
+                error_text=f"commit failed: {type(exc).__name__}: {exc}",
+            )
     return results
