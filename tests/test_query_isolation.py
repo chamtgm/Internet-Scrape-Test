@@ -292,3 +292,29 @@ def test_feed_with_huge_limit_is_capped(session, raw_dir):
     alice, bob = setup_items_for_pagination(session, raw_dir)
     results = feed(session, user_id=alice.id, limit=10_000_000)
     assert len(results) <= MAX_LIMIT
+
+
+def test_feed_items_expose_their_source(session, raw_dir):
+    alice, _bob = setup_two_users_with_private_items(session, raw_dir)
+    items = feed(session, user_id=alice.id)
+    assert items, "expected seeded items"
+    for item in items:
+        assert item.source.identifier
+
+
+def test_get_item_exposes_its_source(session, raw_dir):
+    alice, _bob = setup_two_users_with_private_items(session, raw_dir)
+    first = feed(session, user_id=alice.id)[0]
+    fetched = get_item(session, user_id=alice.id, item_id=first.id)
+    assert fetched is not None
+    assert fetched.source.identifier == first.source.identifier
+
+
+def test_search_items_expose_their_source(session, raw_dir):
+    alice, _bob = setup_two_users_with_private_items(session, raw_dir)
+    # "alpha" is the content_text seeded by setup_two_users_with_private_items;
+    # "body" (the brief's suggested term) does not appear there.
+    results = search(session, user_id=alice.id, q="alpha")
+    assert results, "expected search hits"
+    for item in results:
+        assert item.source.identifier

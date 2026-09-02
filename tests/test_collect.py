@@ -271,6 +271,22 @@ def test_collect_tier_isolates_non_adapter_error_and_continues_with_next_source(
     assert good_run.status == "success"
 
 
+def test_source_health_reports_error_text_and_item_count(session, raw_dir):
+    good = add_source(session, kind="rss", identifier="https://a/feed", tier=1)
+    bad = add_source(session, kind="web_page", identifier="https://b", tier=1)
+    registry = {
+        "rss": StubAdapter("rss", items=one_item()),
+        "web_page": StubAdapter("web_page", error=AdapterError("upstream exploded")),
+    }
+    collect_tier(session, tier=1, registry=registry, raw_dir=raw_dir, now=NOW)
+
+    health = {s.source_id: s for s in source_health(session)}
+    assert health[good.id].item_count == 1
+    assert health[good.id].error_text is None
+    assert health[bad.id].item_count == 0
+    assert "upstream exploded" in health[bad.id].error_text
+
+
 def test_collect_tier_survives_a_poisoned_transaction_from_a_malformed_item(session, raw_dir):
     """A malformed item (url=None) passes NormalizedItem's dataclass with no runtime
     validation, then hits a genuine Postgres NOT NULL violation inside upsert_items.

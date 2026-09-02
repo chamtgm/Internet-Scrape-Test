@@ -16,7 +16,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 TSV_EXPRESSION = (
     "setweight(to_tsvector('english', coalesce(title, '')), 'A') || "
@@ -97,6 +97,7 @@ class Item(Base):
     content_text: Mapped[str] = mapped_column(Text)
     raw_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64))
+    source: Mapped["Source"] = relationship(lazy="raise")
     content_tsv: Mapped[str] = mapped_column(
         TSVECTOR, Computed(TSV_EXPRESSION, persisted=True), nullable=True
     )

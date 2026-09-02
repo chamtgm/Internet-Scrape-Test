@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import ColumnElement, and_, desc, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from reachstore.models import FetchRun, Item, Source, Subscription
 
@@ -33,7 +33,11 @@ def visible_to(user_id: int) -> ColumnElement[bool]:
 
 
 def get_item(session: Session, *, user_id: int, item_id: int) -> Item | None:
-    stmt = select(Item).where(Item.id == item_id, visible_to(user_id))
+    stmt = (
+        select(Item)
+        .options(selectinload(Item.source))
+        .where(Item.id == item_id, visible_to(user_id))
+    )
     return session.execute(stmt).scalars().one_or_none()
 
 
@@ -61,7 +65,7 @@ def feed(
     typically emit newest-first, so the newest item (highest published_at)
     is inserted first and gets the *lowest* id.
     """
-    stmt = select(Item).where(visible_to(user_id))
+    stmt = select(Item).options(selectinload(Item.source)).where(visible_to(user_id))
     if before_id is not None:
         if before_published_at is not None:
             stmt = stmt.where(
@@ -100,7 +104,7 @@ def search(
     if since is not None:
         conditions.append(Item.published_at >= since)
 
-    stmt = select(Item)
+    stmt = select(Item).options(selectinload(Item.source))
     if kinds or subscribed_only:
         stmt = stmt.join(Source, Source.id == Item.source_id)
     if kinds:
@@ -171,6 +175,8 @@ class SourceStatus:
     last_run_at: datetime | None
     consecutive_failures: int
     needs_attention: bool
+    error_text: str | None
+    item_count: int
 
 
 def source_health(session: Session) -> list[SourceStatus]:
@@ -198,6 +204,11 @@ def source_health(session: Session) -> list[SourceStatus]:
     from reachstore.collect import FAILURE_LIMIT, consecutive_failures
 
     sources = session.execute(select(Source).order_by(Source.id)).scalars().all()
+    counts = dict(
+        session.execute(
+            select(Item.source_id, func.count(Item.id)).group_by(Item.source_id)
+        ).all()
+    )
 
     statuses: list[SourceStatus] = []
     for source in sources:
@@ -217,6 +228,8 @@ def source_health(session: Session) -> list[SourceStatus]:
                 last_run_at=last.started_at if last else None,
                 consecutive_failures=failures,
                 needs_attention=failures >= FAILURE_LIMIT,
+                error_text=last.error_text if last else None,
+                item_count=counts.get(source.id, 0),
             )
         )
     return statuses
