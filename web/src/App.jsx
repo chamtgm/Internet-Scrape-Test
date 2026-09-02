@@ -23,11 +23,25 @@ export default function App() {
   const loadingMoreRef = useRef(false)
   const collectPendingRef = useRef(false)
 
+  // Generation counter: loadFeed/search/loadMore all write `items`/`cursor`
+  // from an uncancelled fetch. Bumping this ref on every new call and only
+  // applying a response whose captured id still matches lets a stale,
+  // slow response (e.g. a "Load more" that started before a search) get
+  // silently dropped instead of corrupting whatever is now on screen.
+  const requestIdRef = useRef(0)
+
   const fail = (e) => setError(String(e))
 
   const loadFeed = useCallback(() => {
     setSearching(false)
-    fetchFeed(null).then((r) => { setItems(r.items); setCursor(r.next_cursor) }).catch(fail)
+    setError(null)
+    const reqId = ++requestIdRef.current
+    fetchFeed(null)
+      .then((r) => {
+        if (requestIdRef.current !== reqId) return
+        setItems(r.items); setCursor(r.next_cursor)
+      })
+      .catch((e) => { if (requestIdRef.current === reqId) fail(e) })
   }, [])
 
   const refreshSources = useCallback(
@@ -41,11 +55,21 @@ export default function App() {
   // means a page reload during a run picks the progress view back up.
   useEffect(() => { loadFeed(); refreshSources() }, [loadFeed, refreshSources])
 
-  const select = (id) => fetchItem(id).then(setSelected).catch(fail)
+  const select = (id) => {
+    setError(null)
+    fetchItem(id).then(setSelected).catch(fail)
+  }
 
   const search = (q) => {
     setSearching(true)
-    fetchSearch(q).then((r) => { setItems(r.items); setCursor(null) }).catch(fail)
+    setError(null)
+    const reqId = ++requestIdRef.current
+    fetchSearch(q)
+      .then((r) => {
+        if (requestIdRef.current !== reqId) return
+        setItems(r.items); setCursor(null)
+      })
+      .catch((e) => { if (requestIdRef.current === reqId) fail(e) })
   }
 
   const loadMore = () => {
@@ -55,9 +79,14 @@ export default function App() {
     if (loadingMoreRef.current) return
     loadingMoreRef.current = true
     setLoadingMore(true)
+    setError(null)
+    const reqId = ++requestIdRef.current
     fetchFeed(cursor)
-      .then((r) => { setItems((prev) => [...prev, ...r.items]); setCursor(r.next_cursor) })
-      .catch(fail)
+      .then((r) => {
+        if (requestIdRef.current !== reqId) return
+        setItems((prev) => [...prev, ...r.items]); setCursor(r.next_cursor)
+      })
+      .catch((e) => { if (requestIdRef.current === reqId) fail(e) })
       .finally(() => { loadingMoreRef.current = false; setLoadingMore(false) })
   }
 
