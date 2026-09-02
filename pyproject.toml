@@ -31,3 +31,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+filterwarnings = [
+    # fastapi.testclient warns on import that httpx-backed starlette.testclient is
+    # deprecated in favor of httpx2. httpx is production code (HttpxFetcher in
+    # adapters/base.py); adding a second HTTP client library to silence a
+    # test-only warning is the worse trade, so this is suppressed by exact
+    # message instead.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.:starlette.exceptions.StarletteDeprecationWarning",
+]
