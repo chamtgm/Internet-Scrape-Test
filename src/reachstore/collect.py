@@ -162,4 +162,17 @@ def collect_tier(
         results.append(
             collect_source(session, source=source, adapter=adapter, raw_dir=raw_dir, now=now)
         )
+        try:
+            # Commit each source's terminal state before starting the next, so
+            # a reader sees runs land one at a time and a crash mid-tier keeps
+            # the failures the circuit breaker depends on.
+            session.commit()
+        except Exception:
+            # The bulkhead extends to the commit. Letting a commit failure
+            # escape would abort the whole tier -- the exact failure mode
+            # per-source isolation exists to prevent. Roll back so the session
+            # is usable for the next source; if the database is genuinely gone,
+            # every remaining source records a failure and `collect` exits 1
+            # through the existing all-sources-failed path.
+            session.rollback()
     return results
