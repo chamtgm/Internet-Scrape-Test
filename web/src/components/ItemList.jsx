@@ -1,4 +1,4 @@
-export default function ItemList({ items, selectedId, onSelect, onLoadMore, hasMore }) {
+export default function ItemList({ items, selectedId, onSelect, onLoadMore, hasMore, loadingMore }) {
   if (items.length === 0) return <div className="item-list"><p className="empty">No items.</p></div>
 
   return (
@@ -15,7 +15,11 @@ export default function ItemList({ items, selectedId, onSelect, onLoadMore, hasM
           </div>
         </button>
       ))}
-      {hasMore && <button className="load-more" onClick={onLoadMore}>Load more</button>}
+      {hasMore && (
+        <button className="load-more" onClick={onLoadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </button>
+      )}
     </div>
   )
 }
