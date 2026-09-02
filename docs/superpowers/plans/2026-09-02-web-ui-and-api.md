@@ -6,7 +6,9 @@
 
 **Architecture:** A thin FastAPI app (`src/reachstore/api/`) that calls existing `query` and `collect` functions and serialises their results — it builds no SQL of its own. A React + Vite frontend (`web/`) served by Vite in development (proxying `/api` to FastAPI) and by FastAPI from `web/dist` in production. Collection runs as a FastAPI background task; the client polls `GET /api/sources`, which reports both per-source progress and whether a run is still in flight.
 
-**Tech Stack:** FastAPI, Uvicorn, Pydantic v2, SQLAlchemy 2.x (existing), React 18, Vite 5, Playwright (already installed).
+**Tech Stack:** FastAPI, Uvicorn, Pydantic v2, SQLAlchemy 2.x (existing), React 19, Vite 8, Playwright (already installed).
+
+> The React/Vite majors read "18 / 5" when this plan was drafted — an unverified guess made before anything was installed. `npm create vite@latest` brought React 19.2.8 and Vite 8.2.2, the current majors, and the app was verified working on them end to end. The code uses no React-18-only or Vite-5-only API, so the plan was corrected to match the working software rather than the software downgraded to match the plan.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-web-ui-and-api-design.md`
 
