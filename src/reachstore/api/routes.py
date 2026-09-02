@@ -35,11 +35,20 @@ def list_sources(session: Session = Depends(get_session)) -> SourcesResponse:
     )
 
 
-@router.post("/collect", response_model=CollectResponse, status_code=202)
+@router.post(
+    "/collect",
+    response_model=CollectResponse,
+    status_code=202,
+    responses={409: {"model": CollectResponse}},
+)
 def post_collect(
     body: CollectRequest, background: BackgroundTasks, response: Response
 ) -> CollectResponse:
-    if collect_runner.is_running():
+    # try_start() claims the slot synchronously, here in the handler -- not
+    # inside the background task. A background task runs after the response
+    # has already been sent, so checking there leaves a window where a second
+    # request would also see no run in flight and also report started=True.
+    if not collect_runner.try_start():
         response.status_code = 409
         return CollectResponse(
             started=False, reason="a collection run is already in progress"

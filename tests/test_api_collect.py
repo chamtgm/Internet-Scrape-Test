@@ -1,9 +1,23 @@
+from datetime import UTC
+
 import pytest
 from fastapi.testclient import TestClient
 
 from reachstore.api import collect_runner
 from reachstore.api.app import create_app
 from reachstore.api.deps import get_session
+
+
+@pytest.fixture(autouse=True)
+def _reset_collect_runner_flag():
+    """A stuck or leaked flag from one test must not poison the next.
+
+    Matters more now that the claim (`try_start()`) can be made directly by a
+    test without going through a `run_collection` that clears it.
+    """
+    collect_runner._running = False
+    yield
+    collect_runner._running = False
 
 
 def make_client(session):
@@ -25,8 +39,11 @@ def test_collect_accepts_and_reports_started(session, monkeypatch):
     assert calls == [(1, False)]
 
 
-def test_collect_rejects_a_second_run_while_one_is_in_flight(session, monkeypatch):
-    monkeypatch.setattr(collect_runner, "is_running", lambda: True)
+def test_collect_rejects_a_second_run_while_one_is_in_flight(session):
+    # Claim the slot for real, the same way post_collect's own try_start()
+    # call would for an in-flight run -- not by monkeypatching is_running,
+    # which would pass even if the handler's guard were not atomic.
+    assert collect_runner.try_start() is True
     response = make_client(session).post("/api/collect", json={"tier": 1, "force": False})
     assert response.status_code == 409
     assert response.json()["started"] is False
@@ -74,15 +91,20 @@ def test_the_runner_opens_its_own_session_and_always_clears_the_flag(
         seen["session"] = sess
         seen["tier"] = kwargs["tier"]
         seen["force"] = kwargs["force"]
+        seen["now"] = kwargs["now"]
         seen["running_during"] = collect_runner.is_running()
         return []
 
     monkeypatch.setattr(collect_runner, "collect_tier", fake_collect_tier)
+    # run_collection no longer claims the slot itself -- it trusts the
+    # caller already did, the same way post_collect's try_start() call would.
+    assert collect_runner.try_start() is True
     collect_runner.run_collection(tier=2, force=True)
 
     assert seen["session"] is fake
     assert seen["session"] is not session
     assert seen["tier"] == 2 and seen["force"] is True
+    assert seen["now"].tzinfo is UTC
     assert seen["running_during"] is True
     assert fake.closed
     assert collect_runner.is_running() is False
@@ -100,5 +122,24 @@ def test_a_crashing_run_still_clears_the_flag(session, raw_dir, monkeypatch):
         raise RuntimeError("database gone")
 
     monkeypatch.setattr(collect_runner, "collect_tier", boom)
+    assert collect_runner.try_start() is True
+    collect_runner.run_collection(tier=1, force=False)  # must not raise
+    assert collect_runner.is_running() is False
+
+
+def test_a_session_close_that_raises_still_clears_the_flag(session, raw_dir, monkeypatch):
+    """close() can itself raise -- a connection broken mid-transaction is
+    exactly what the outage collect_tier's except clause guards against.
+    Neither older fake session had a close() that could raise."""
+
+    class FakeSession:
+        def close(self):
+            raise RuntimeError("connection already closed")
+
+    monkeypatch.setattr(collect_runner, "get_session_factory", lambda: (lambda: FakeSession()))
+    monkeypatch.setattr(collect_runner, "raw_dir", lambda: raw_dir)
+    monkeypatch.setattr(collect_runner, "collect_tier", lambda sess, **kwargs: [])
+
+    assert collect_runner.try_start() is True
     collect_runner.run_collection(tier=1, force=False)  # must not raise
     assert collect_runner.is_running() is False
