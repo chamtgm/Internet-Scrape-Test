@@ -6,13 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "seed:e2e": "cd .. && .venv/bin/python web/tests/seed_e2e.py",
+    "test:e2e": "npm run seed:e2e && playwright test"
   },
   "dependencies": {
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@vitejs/plugin-react": "^6.1.0",
     "vite": "^8.2.2"
   }
