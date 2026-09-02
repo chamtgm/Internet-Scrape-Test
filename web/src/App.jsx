@@ -55,9 +55,41 @@ export default function App() {
   // means a page reload during a run picks the progress view back up.
   useEffect(() => { loadFeed(); refreshSources() }, [loadFeed, refreshSources])
 
+  useEffect(() => {
+    if (!collecting) return
+    let cancelled = false
+    const id = setInterval(async () => {
+      try {
+        const r = await fetchSources()
+        if (cancelled) return
+        // Per-source rows update as each source commits (Task 4), so the
+        // health strip fills in progressively. `collecting` is the server's
+        // own flag -- run status cannot be used, because collect_tier only
+        // ever commits terminal statuses and a reader never sees "running".
+        setSources(r.sources)
+        if (!r.collecting) {
+          setCollecting(false)
+          loadFeed()
+        }
+      } catch (e) {
+        if (!cancelled) { setError(String(e)); setCollecting(false) }
+      }
+    }, 2000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [collecting, loadFeed])
+
+  // Own counter, separate from requestIdRef: `select` fires on every row
+  // click, far more often than feed/search/loadMore. Sharing requestIdRef
+  // would let a detail click cancel an in-flight loadFeed/search/loadMore
+  // write by superseding its generation.
+  const selectIdRef = useRef(0)
+
   const select = (id) => {
     setError(null)
-    fetchItem(id).then(setSelected).catch(fail)
+    const reqId = ++selectIdRef.current
+    fetchItem(id)
+      .then((item) => { if (selectIdRef.current === reqId) setSelected(item) })
+      .catch((e) => { if (selectIdRef.current === reqId) fail(e) })
   }
 
   const search = (q) => {
