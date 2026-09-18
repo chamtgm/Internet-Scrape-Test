@@ -3789,6 +3789,12 @@ button. Everyone else can read, search, and subscribe.
 
 In `web/README.md`, note in the e2e section that the specs sign in first, using the admin account `seed_e2e.py` creates, and that the credentials are duplicated in both files and must stay in step.
 
+- [ ] **Step 3b: Correct `seed_e2e.py`'s module docstring**
+
+Task 11 added a subscription reset to `web/tests/seed_e2e.py`, but its module docstring still says only that the script is idempotent because `upsert_items` conflicts and skips. A reader skimming the top of the file would not learn that the e2e user's subscriptions are also cleared on every run.
+
+Add one line saying so, and why: `unsubscribe` is a soft delete that only clears `active`, so without the reset a second `npm run test:e2e` would start with a subscription already in place and fail the "nothing subscribed" precondition.
+
 - [ ] **Step 4: Run everything**
 
 ```bash
