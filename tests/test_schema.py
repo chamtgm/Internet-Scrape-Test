@@ -106,3 +106,22 @@ def test_deleting_a_user_deletes_their_sessions(session):
     session.flush()
     remaining = session.execute(select(func.count(UserSession.id))).scalar()
     assert remaining == 0
+
+
+def test_is_admin_has_server_default_on_users_and_invites(session):
+    from sqlalchemy import inspect
+
+    from reachstore.models import Invite, User
+
+    # DB-level: the migration must give both columns a real server default.
+    insp = inspect(session.get_bind())
+    users_is_admin = next(c for c in insp.get_columns("users") if c["name"] == "is_admin")
+    invites_is_admin = next(c for c in insp.get_columns("invites") if c["name"] == "is_admin")
+    assert users_is_admin["default"] is not None
+    assert invites_is_admin["default"] is not None
+
+    # Model-level: the ORM column definitions must agree with the migration,
+    # or a future `alembic revision --autogenerate` would propose dropping
+    # the one the model omits.
+    assert User.__table__.columns["is_admin"].server_default is not None
+    assert Invite.__table__.columns["is_admin"].server_default is not None
