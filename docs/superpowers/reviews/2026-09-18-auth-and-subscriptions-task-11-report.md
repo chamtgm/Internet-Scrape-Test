@@ -240,15 +240,15 @@ merely documented-behavior.
 
 Before starting:
 ```
-php  29601  ... 08-09:08:51  -S 127.0.0.1:8000 ... mdpos8 ... (Laravel dev server)
-php  53638  ... 10-03:56:30  -S 127.0.0.1:8001 ... mdpos8 ...
+php  29601  ... 08-09:08:51  -S 127.0.0.1:8000 ... an unrelated local project ... (Laravel dev server)
+php  53638  ... 10-03:56:30  -S 127.0.0.1:8001 ... an unrelated local project ...
 ```
 
 After all work (multiple e2e runs, a pytest run, and a final deliberate
 bind-collision run against the reverted 8000 config):
 ```
-php  29601  ... 08-09:17:07  -S 127.0.0.1:8000 ... mdpos8 ...   (still up, uptime increased, never restarted)
-php  53638  ... 10-03:57:34  -S 127.0.0.1:8001 ... mdpos8 ...   (still up)
+php  29601  ... 08-09:17:07  -S 127.0.0.1:8000 ... an unrelated local project ...   (still up, uptime increased, never restarted)
+php  53638  ... 10-03:57:34  -S 127.0.0.1:8001 ... an unrelated local project ...   (still up)
 ```
 
 Both PIDs identical before and after, `lsof` confirms both still LISTENing

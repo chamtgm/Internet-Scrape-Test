@@ -315,8 +315,8 @@ Before:
 
 After:
 ```
-29601 08-10:02:44 /opt/homebrew/.../php -S 127.0.0.1:8000 .../mdpos8/.../server.php
-53638 10-04:43:11 /opt/homebrew/.../php -S 127.0.0.1:8001 .../mdpos8/.../server.php
+29601 08-10:02:44 /opt/homebrew/.../php -S 127.0.0.1:8000 .../<unrelated-project>/server.php
+53638 10-04:43:11 /opt/homebrew/.../php -S 127.0.0.1:8001 .../<unrelated-project>/server.php
 ```
 
 `lsof` confirms both still hold their listening sockets. Elapsed time increased
