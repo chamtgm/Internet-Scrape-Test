@@ -23,10 +23,11 @@ from reachstore.api.auth import (
     delete_session,
     find_user_by_email,
     get_current_user,
+    require_admin,
     spend_dummy_verify,
     verify_password,
 )
-from reachstore.api.deps import DEFAULT_USER_ID, get_session
+from reachstore.api.deps import get_session
 from reachstore.api.schemas import (
     CollectRequest,
     CollectResponse,
@@ -48,7 +49,10 @@ EXCERPT_CHARS = 240
 
 
 @router.get("/sources", response_model=SourcesResponse)
-def list_sources(session: Session = Depends(get_session)) -> SourcesResponse:
+def list_sources(
+    session: Session = Depends(get_session),
+    _admin: User = Depends(require_admin),
+) -> SourcesResponse:
     statuses = query.source_health(session)
     return SourcesResponse(
         sources=[SourceStatusOut(**vars(s)) for s in statuses],
@@ -63,7 +67,10 @@ def list_sources(session: Session = Depends(get_session)) -> SourcesResponse:
     responses={409: {"model": CollectResponse}},
 )
 def post_collect(
-    body: CollectRequest, background: BackgroundTasks, response: Response
+    body: CollectRequest,
+    background: BackgroundTasks,
+    response: Response,
+    _admin: User = Depends(require_admin),
 ) -> CollectResponse:
     # try_start() claims the slot synchronously, here in the handler -- not
     # inside the background task. A background task runs after the response
@@ -98,6 +105,7 @@ def _summary(item: Item) -> ItemSummary:
 @router.get("/feed", response_model=FeedResponse)
 def get_feed(
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=query.MAX_LIMIT),
     before_published_at: AwareDatetime | None = None,
     before_id: int | None = None,
@@ -111,7 +119,7 @@ def get_feed(
     """
     items = query.feed(
         session,
-        user_id=DEFAULT_USER_ID,
+        user_id=user.id,
         limit=limit,
         before_id=before_id,
         before_published_at=before_published_at,
@@ -130,10 +138,11 @@ def get_search(
     kind: str | None = None,
     limit: int = Query(50, ge=1, le=query.MAX_LIMIT),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ) -> SearchResponse:
     items = query.search(
         session,
-        user_id=DEFAULT_USER_ID,
+        user_id=user.id,
         q=q,
         kinds=[kind] if kind else None,
         limit=limit,
@@ -142,14 +151,17 @@ def get_search(
 
 
 @router.get("/items/{item_id}", response_model=ItemDetail)
-def get_one_item(item_id: int, session: Session = Depends(get_session)) -> ItemDetail:
+def get_one_item(
+    item_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> ItemDetail:
     """404 both when the item does not exist and when it is not visible.
 
     The two are deliberately indistinguishable, so this endpoint cannot be
-    used to probe for the existence of another user's private items once
-    Plan 2 introduces real users.
+    used to probe for the existence of another user's private items.
     """
-    item = query.get_item(session, user_id=DEFAULT_USER_ID, item_id=item_id)
+    item = query.get_item(session, user_id=user.id, item_id=item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="item not found")
     return ItemDetail(
