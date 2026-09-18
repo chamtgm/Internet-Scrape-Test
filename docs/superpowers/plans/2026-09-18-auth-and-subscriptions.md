@@ -351,11 +351,19 @@ Expected: PASS. The `engine` fixture runs `alembic upgrade head` against the tes
 - [ ] **Step 6: Apply the migration to the development database**
 
 ```bash
+export $(grep -E '^DATABASE_URL=' .env | xargs)
 .venv/bin/alembic upgrade head
 .venv/bin/alembic current
 ```
 
-Expected: `current` reports `0002`. This is the database the web UI and CLI actually use; the test database is separate.
+Expected: `current` reports `0002 (head)`.
+
+**The `export` is required, not optional.** `migrations/env.py:15` reads
+`os.environ.get("ALEMBIC_DATABASE_URL") or os.environ["DATABASE_URL"]` — it
+does *not* read `.env`. Pydantic `Settings` loads `.env`, which is why the CLI
+and the API work without this, but Alembic is invoked directly and does not go
+through `Settings`. A bare `alembic upgrade head` fails with
+`KeyError: 'DATABASE_URL'`. This is the database the web UI and CLI actually use; the test database is separate.
 
 - [ ] **Step 7: Verify the existing row survived**
 
@@ -3647,6 +3655,17 @@ Two other commands:
 .venv/bin/python -m reachstore.cli set-password someone@example.com
 .venv/bin/python -m reachstore.cli revoke-sessions someone@example.com
 ```
+
+Note on migrations: Alembic does not read `.env` — `migrations/env.py` takes
+the URL from the real environment. Export it first:
+
+```bash
+export $(grep -E '^DATABASE_URL=' .env | xargs)
+.venv/bin/alembic upgrade head
+```
+
+The CLI and the API do not need this; they load `.env` through pydantic
+`Settings`.
 
 `--admin` grants the operator surface: the health strip, and the Collect
 button. Everyone else can read, search, and subscribe.
