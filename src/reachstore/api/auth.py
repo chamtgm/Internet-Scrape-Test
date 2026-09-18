@@ -205,6 +205,16 @@ def consume_invite(session: Session, *, token: str, now: datetime) -> Invite | N
     return row
 
 
+def find_user_by_email(session: Session, email: str) -> User | None:
+    """The user with this email, or None.
+
+    Used by login now; the invite-setup and password-reset flows (Tasks 6-7)
+    need the same lookup, so it lives here rather than being duplicated --
+    `auth.py` already owns every query against `users`.
+    """
+    return session.execute(select(User).where(User.email == email)).scalars().one_or_none()
+
+
 def get_current_user(
     session: Session = Depends(get_session),
     token: str | None = Cookie(default=None, alias=COOKIE_NAME),

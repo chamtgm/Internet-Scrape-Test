@@ -1,11 +1,31 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from datetime import UTC, datetime
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    HTTPException,
+    Query,
+    Response,
+)
 from pydantic import AwareDatetime
 from sqlalchemy.orm import Session
 
 from reachstore import query
 from reachstore.api import collect_runner
+from reachstore.api.auth import (
+    COOKIE_NAME,
+    SESSION_LIFETIME,
+    create_session,
+    delete_session,
+    find_user_by_email,
+    get_current_user,
+    spend_dummy_verify,
+    verify_password,
+)
 from reachstore.api.deps import DEFAULT_USER_ID, get_session
 from reachstore.api.schemas import (
     CollectRequest,
@@ -14,11 +34,13 @@ from reachstore.api.schemas import (
     FeedResponse,
     ItemDetail,
     ItemSummary,
+    LoginRequest,
     SearchResponse,
     SourcesResponse,
     SourceStatusOut,
+    UserOut,
 )
-from reachstore.models import Item
+from reachstore.models import Item, User
 
 router = APIRouter(prefix="/api")
 
@@ -135,3 +157,71 @@ def get_one_item(item_id: int, session: Session = Depends(get_session)) -> ItemD
         content_text=item.content_text,
         fetched_at=item.fetched_at,
     )
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    """One place that writes the cookie, so login and setup cannot drift.
+
+    `secure` is deliberately absent: there is no HTTPS on localhost and
+    setting it would stop the cookie being sent at all. This is a decision,
+    not an oversight.
+    """
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=int(SESSION_LIFETIME.total_seconds()),
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+    )
+
+
+@router.post("/auth/login", response_model=UserOut)
+def post_login(
+    body: LoginRequest, response: Response, session: Session = Depends(get_session)
+) -> UserOut:
+    """401 with one identical body for a wrong password and an unknown email.
+
+    The unknown-email branch still spends a full password verification, so the
+    two cases take comparable time. Without that, latency alone reveals which
+    addresses have accounts.
+    """
+    user = find_user_by_email(session, body.email)
+    if user is None:
+        spend_dummy_verify()
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    if not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="invalid email or password")
+
+    token = create_session(session, user_id=user.id, now=datetime.now(UTC))
+    session.commit()
+    _set_session_cookie(response, token)
+    return _user_out(user)
+
+
+@router.post("/auth/logout")
+def post_logout(
+    response: Response,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+    token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, bool]:
+    if token is not None:
+        delete_session(session, token=token)
+        session.commit()
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@router.get("/auth/me", response_model=UserOut)
+def get_me(user: User = Depends(get_current_user)) -> UserOut:
+    return _user_out(user)

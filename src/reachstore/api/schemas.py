@@ -73,3 +73,20 @@ class FeedResponse(BaseModel):
 
 class SearchResponse(BaseModel):
     items: list[ItemSummary]
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SetupRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    is_admin: bool
