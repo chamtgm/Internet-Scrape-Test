@@ -2604,6 +2604,69 @@ In `tests/test_api_permissions.py`, add to `CASES`:
 
 `PUT /api/subscriptions/{id}` is not in the table because it 404s on an id that does not exist, which would need a seeded source; `test_subscribing_requires_a_session` covers its anonymous case.
 
+**Also close three gaps the Task 5 review found in this file.** They were inherited from my plan text, and this task is the right moment because it is the first task to add new endpoints — exactly what the file's own docstring claims to catch.
+
+1. **Make the docstring's promise real.** `test_api_permissions.py` opens by claiming "A new endpoint added without a row here is the failure this file exists to catch" — but nothing enumerates the app's routes, so a new endpoint with no row leaves the file green. Add:
+
+```python
+def test_every_api_route_is_in_the_matrix():
+    """Makes this file's opening claim true rather than aspirational.
+
+    Without this, a new endpoint added with no CASES row leaves the suite
+    green and its access level unasserted -- which is precisely how an
+    endpoint ships unauthenticated.
+    """
+    from reachstore.api.app import create_app
+
+    # Exempt by design, each for a stated reason:
+    #   /api/auth/login  - must be reachable anonymously; that IS its contract
+    #   /api/auth/setup  - same, and it is covered by tests/test_api_auth.py
+    #   /api/collect     - covered by test_collect_is_admin_only, which needs
+    #                      a stubbed runner the table-driven test cannot supply
+    #   /api/docs, /api/openapi.json - FastAPI's own, not ours
+    EXEMPT = {
+        "/api/auth/login",
+        "/api/auth/setup",
+        "/api/collect",
+        "/api/docs",
+        "/api/openapi.json",
+    }
+    covered = {path.split("?")[0] for _method, path, *_ in CASES}
+    missing = []
+    for route in create_app().routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api") or path in EXEMPT or path in covered:
+            continue
+        missing.append(path)
+    assert not missing, f"endpoints with no permission-matrix row: {sorted(set(missing))}"
+```
+
+Note `covered` strips the query string, because `CASES` holds `/api/search?q=anything` while the route's own path is `/api/search`.
+
+2. **Make the collect stub match the real contract.** `no_op_collect` currently uses `lambda tier, force: None`, but the real `run_collection` clears `_running` in its `finally` (`collect_runner.py:105-107`). The stub leaves it `True`. Cross-test leakage is already prevented by conftest's autouse reset, but a second admin `POST /api/collect` inside one test would get an unexplained 409. Change it to:
+
+```python
+    monkeypatch.setattr(
+        collect_runner,
+        "run_collection",
+        lambda tier, force: setattr(collect_runner, "_running", False),
+    )
+```
+
+3. **Name the role in the matrix failure message.** `{client}` renders as `<starlette.testclient.TestClient object at 0x...>`, which tells you nothing about which role failed — in the one test guarding the auth boundary. Label the tuples:
+
+```python
+    for label, client, expected in (
+        ("anon", anon_client, anon),
+        ("user", user_client, user),
+        ("admin", admin_client, admin),
+    ):
+        response = client.request(method, path)
+        assert response.status_code == expected, (
+            f"{method} {path} as {label}: expected {expected}, got {response.status_code}"
+        )
+```
+
 - [ ] **Step 10: Run the full suite and commit**
 
 ```bash
