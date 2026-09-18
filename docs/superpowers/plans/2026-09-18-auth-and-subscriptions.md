@@ -3127,7 +3127,7 @@ export default function SearchBar({
       </label>
 ```
 
-Also change `submit` so toggling the box re-runs an active search rather than requiring the user to press Enter again — `Store` owns that, so `SearchBar` only reports the change.
+`SearchBar` gets only the checkbox and the two new props — **do not touch `submit`.** Re-running an active search on toggle is `Store.changeSubscribedOnly`'s job (Step 3). Two components both re-running the query would fire duplicate requests on every toggle.
 
 - [ ] **Step 3: Wire it through `Store.jsx`**
 
