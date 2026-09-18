@@ -4,6 +4,7 @@ import HealthStrip from './HealthStrip'
 import ItemDetail from './ItemDetail'
 import ItemList from './ItemList'
 import SearchBar from './SearchBar'
+import SubscriptionStrip from './SubscriptionStrip'
 
 export default function Store({ me, onSignedOut }) {
   const [items, setItems] = useState([])
@@ -11,6 +12,7 @@ export default function Store({ me, onSignedOut }) {
   const [selected, setSelected] = useState(null)
   const [sources, setSources] = useState([])
   const [searching, setSearching] = useState(false)
+  const [subscribedOnly, setSubscribedOnly] = useState(false)
   const [collecting, setCollecting] = useState(false)
   const [collectPending, setCollectPending] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -42,6 +44,11 @@ export default function Store({ me, onSignedOut }) {
   // searched *during* the run.
   const searchingRef = useRef(false)
 
+  // Mirrors subscribedOnly for the same reason searchingRef mirrors
+  // `searching`: the last query has to be re-runnable from a callback that
+  // would otherwise close over a stale value.
+  const lastQueryRef = useRef(null)
+
   // Own counter, separate from requestIdRef: `select` fires on every row
   // click, far more often than feed/search/loadMore. Sharing requestIdRef
   // would let a detail click cancel an in-flight loadFeed/search/loadMore
@@ -55,6 +62,7 @@ export default function Store({ me, onSignedOut }) {
 
   const loadFeed = useCallback(() => {
     searchingRef.current = false
+    lastQueryRef.current = null
     setSearching(false)
     setError(null)
     const reqId = ++requestIdRef.current
@@ -117,17 +125,26 @@ export default function Store({ me, onSignedOut }) {
       .catch((e) => { if (selectIdRef.current === reqId) fail(e) })
   }
 
-  const search = (q) => {
+  const search = (q, onlySubscribed = subscribedOnly) => {
     searchingRef.current = true
+    lastQueryRef.current = q
     setSearching(true)
     setError(null)
     const reqId = ++requestIdRef.current
-    fetchSearch(q)
+    fetchSearch(q, null, onlySubscribed)
       .then((r) => {
         if (requestIdRef.current !== reqId) return
         setItems(r.items); setCursor(null)
       })
       .catch((e) => { if (requestIdRef.current === reqId) fail(e) })
+  }
+
+  // Re-run the active search immediately so the checkbox has a visible
+  // effect. With no search active the flag only applies to /api/search, so
+  // there is nothing to re-run -- the feed is deliberately unfiltered.
+  const changeSubscribedOnly = (next) => {
+    setSubscribedOnly(next)
+    if (searchingRef.current && lastQueryRef.current) search(lastQueryRef.current, next)
   }
 
   const loadMore = () => {
@@ -175,9 +192,12 @@ export default function Store({ me, onSignedOut }) {
           onCollect={collect}
           collecting={collecting || collectPending}
           canCollect={me.is_admin}
+          subscribedOnly={subscribedOnly}
+          onSubscribedOnlyChange={changeSubscribedOnly}
         />
         <div className="header-row">
           {me.is_admin && <HealthStrip sources={sources} />}
+          <SubscriptionStrip onError={fail} />
           <span className="whoami">
             {me.display_name}
             {me.is_admin && <span className="badge">admin</span>}

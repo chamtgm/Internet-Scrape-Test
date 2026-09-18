@@ -1,6 +1,9 @@
 import { useState } from 'react'
 
-export default function SearchBar({ onSearch, onClear, onCollect, collecting, canCollect }) {
+export default function SearchBar({
+  onSearch, onClear, onCollect, collecting, canCollect,
+  subscribedOnly, onSubscribedOnlyChange,
+}) {
   const [q, setQ] = useState('')
   const [tier, setTier] = useState(1)
 
@@ -18,6 +21,15 @@ export default function SearchBar({ onSearch, onClear, onCollect, collecting, ca
         placeholder="search collected items…"
         aria-label="search"
       />
+      <label className="subs-only">
+        <input
+          type="checkbox"
+          checked={subscribedOnly}
+          onChange={(e) => onSubscribedOnlyChange(e.target.checked)}
+          aria-label="subscribed only"
+        />
+        subscribed only
+      </label>
       {q && <button type="button" onClick={() => { setQ(''); onClear() }}>clear</button>}
       {canCollect && (
         <>
