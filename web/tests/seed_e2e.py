@@ -17,17 +17,24 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from reachstore.adapters.base import NormalizedItem
+from reachstore.api.auth import hash_password
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
-from reachstore.models import Source
+from reachstore.models import Source, Subscription, User
 from reachstore.store import upsert_items
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 COUNT = 12
 RAW_DIR = Path("data/raw-e2e")
+
+# Credentials for the Playwright specs. Plain text on purpose: this account
+# exists only in the *_test database, which pytest's engine fixture drops at
+# the start of every run.
+E2E_EMAIL = "e2e-admin@example.test"
+E2E_PASSWORD = "e2e-password-1234"
 
 
 def main() -> None:
@@ -62,6 +69,31 @@ def main() -> None:
             session.add(source)
             session.flush()
 
+        user = session.execute(
+            select(User).where(User.email == E2E_EMAIL)
+        ).scalars().one_or_none()
+        if user is None:
+            user = User(
+                email=E2E_EMAIL,
+                display_name="E2E Admin",
+                password_hash=hash_password(E2E_PASSWORD),
+                is_admin=True,
+                created_at=NOW,
+            )
+            session.add(user)
+            session.flush()
+
+        # auth.spec.js's subscription test asserts "nothing subscribed" as its
+        # starting state. subscribe()/unsubscribe() only ever flip `active`
+        # (never delete the row -- see store.py), so a subscription made by a
+        # previous run of this same script would otherwise survive into the
+        # next one and break that precondition. Reset scoped to this one
+        # seeded user, matching this file's stated "safe to run before every
+        # e2e invocation" contract.
+        session.execute(
+            update(Subscription).where(Subscription.user_id == user.id).values(active=False)
+        )
+
         items = [
             NormalizedItem(
                 external_id=f"e2e-{i}",
@@ -84,7 +116,7 @@ def main() -> None:
             now=NOW,
         )
         session.commit()
-        print(f"seeded {COUNT} items ({new} new) into {url.rsplit('/', 1)[-1]}")
+        print(f"seeded {COUNT} items ({new} new) and admin {E2E_EMAIL} into {url.rsplit('/', 1)[-1]}")
     finally:
         session.close()
 
