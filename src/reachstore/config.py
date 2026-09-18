@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     database_url: str
     test_database_url: str = ""
     raw_dir: Path = Path("./data/raw")
+    web_base_url: str = "http://127.0.0.1:5173"
 
 
 @lru_cache

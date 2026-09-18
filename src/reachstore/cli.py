@@ -8,6 +8,13 @@ from sqlalchemy.orm import Session
 
 from reachstore.adapters.base import Adapter, HttpxFetcher, SubprocessRunner
 from reachstore.adapters.registry import build_registry
+from reachstore.api.auth import (
+    MIN_PASSWORD_LENGTH,
+    create_invite,
+    delete_all_sessions,
+    find_user_by_email,
+    hash_password,
+)
 from reachstore.collect import collect_tier
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
@@ -124,6 +131,90 @@ def health() -> None:
     for status in source_health(session):
         flag = "NEEDS ATTENTION" if status.needs_attention else status.last_status or "never run"
         typer.echo(f"[{flag}] {status.kind} {status.identifier} (failures: {status.consecutive_failures})")
+
+
+@app.command()
+def invite(
+    email: str,
+    name: str = typer.Option(..., "--name", help="Display name for the new account."),
+    admin: bool = typer.Option(False, "--admin", help="Grant operator access."),
+) -> None:
+    """Issue a one-time setup link for a new account.
+
+    There is no signup endpoint: an account begins with someone who already
+    has shell access to this machine. That is the entire access-control story
+    for a localhost tool.
+    """
+    session = _session()
+    try:
+        existing = find_user_by_email(session, email)
+        if existing is not None:
+            typer.echo(f"{email} already has an account (id {existing.id}).")
+            raise typer.Exit(code=1)
+
+        token = create_invite(
+            session,
+            email=email,
+            display_name=name,
+            is_admin=admin,
+            now=datetime.now(UTC),
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    # A URL fragment, not a query string: `#setup=<token>` is never sent to
+    # the server, so this single-use credential stays out of access logs,
+    # proxy logs, and the Referer header. The path stays `/`, which both the
+    # Vite dev server and FastAPI's StaticFiles mount already serve.
+    base = get_settings().web_base_url.rstrip("/")
+    typer.echo(f"Invite for {email} ({'admin' if admin else 'user'}), valid 7 days.")
+    typer.echo(f"{base}/#setup={token}")
+    typer.echo("The link works once. Re-run this command to issue another.")
+
+
+@app.command("set-password")
+def set_password(email: str) -> None:
+    """Set an existing account's password, prompting without echo."""
+    # confirmation_prompt asks twice and compares, so a typo cannot silently
+    # become the new password -- there is no email reset to recover with.
+    password = typer.prompt("New password", hide_input=True, confirmation_prompt=True)
+    if len(password) < MIN_PASSWORD_LENGTH:
+        typer.echo(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+        raise typer.Exit(code=1)
+
+    session = _session()
+    try:
+        user = find_user_by_email(session, email)
+        if user is None:
+            typer.echo(f"No account for {email}.")
+            raise typer.Exit(code=1)
+        user.password_hash = hash_password(password)
+        session.commit()
+        typer.echo(f"Password set for {email}.")
+    finally:
+        session.close()
+
+
+@app.command("revoke-sessions")
+def revoke_sessions(email: str) -> None:
+    """Log an account out of every browser.
+
+    Sessions are rows, not signed tokens, so revocation is a DELETE that takes
+    effect on the next request. A stateless signed cookie could not be
+    withdrawn before it expired.
+    """
+    session = _session()
+    try:
+        user = find_user_by_email(session, email)
+        if user is None:
+            typer.echo(f"No account for {email}.")
+            raise typer.Exit(code=1)
+        count = delete_all_sessions(session, user_id=user.id)
+        session.commit()
+        typer.echo(f"Revoked {count} session(s) for {email}.")
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
