@@ -237,9 +237,8 @@ def source_health(session: Session) -> list[SourceStatus]:
     This function used to take (and ignore) a `user_id` parameter, which
     looked like tenant isolation but was not: source identifiers are not
     innocuous (a private RSS feed URL can carry a token; a `github_repo`
-    identifier can name a private repo), so exposing this to anything but an
-    operator requires adding real per-user scoping first, once subscriptions
-    have a write path.
+    identifier can name a private repo), which is why per-user scoping now
+    lives in `/api/catalog` rather than here.
 
     Derives everything from fetch_runs; nothing here is stored state.
     """
