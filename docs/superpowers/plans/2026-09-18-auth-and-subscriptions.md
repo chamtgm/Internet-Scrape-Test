@@ -3619,6 +3619,14 @@ Also update the `RuntimeError` message, which repeats the stale claim:
 
 Run `.venv/bin/pytest tests/test_api_app.py -v` afterwards. It should pass **unchanged**: `test_non_loopback_host_is_refused` asserts only that `"REACHSTORE_ALLOW_NONLOCAL"` appears in the message, and the replacement text above still contains it. If that test fails, your replacement dropped the override name — restore it rather than weakening the assertion.
 
+- [ ] **Step 1b: Correct a docstring this slice made stale**
+
+`src/reachstore/query.py` — `source_health`'s docstring justifies not scoping the function by subscriptions on the grounds that "that table has no write path yet". Task 8 added the write path (`store.subscribe` / `store.unsubscribe`), so the stated reason is now false.
+
+The function's *behaviour* is still correct and must not change — `source_health` is the admin diagnostics view and is deliberately global, unscoped by subscription. Only the justification needs replacing. Say instead that it stays global because it is the operator's view of every source's health, and that per-user narrowing belongs to `/api/catalog`, which is the non-admin surface.
+
+Run `.venv/bin/pytest tests/test_query.py -v` afterwards to confirm nothing depended on the old wording.
+
 - [ ] **Step 2: Update `docs/architecture.md`**
 
 Four sections need edits. Keep the existing voice — short declarative sentences, reasons rather than restatements.
