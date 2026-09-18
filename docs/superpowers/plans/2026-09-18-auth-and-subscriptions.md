@@ -2955,7 +2955,17 @@ export default function Store({ me, onSignedOut }) {
   // A 401 mid-session means the cookie was revoked or expired. Dropping back
   // to the login form is the truthful response; showing "401 Unauthorized" in
   // the error banner would leave a dead UI on screen.
-  const fail = (e) => (e.status === 401 ? onSignedOut() : setError(String(e)))
+  //
+  // useCallback is load-bearing, not decoration: `fail` is passed to
+  // SubscriptionStrip as `onError`, whose `reload` is useCallback(..., [onError])
+  // and whose effect is keyed on [open, reload]. An unstable `fail` gives
+  // `reload` a new identity on every Store render, so selecting an item or a
+  // poll tick would re-fire fetchCatalog() while the strip is open. onSignedOut
+  // is already memoised in App, so this is genuinely stable.
+  const fail = useCallback(
+    (e) => (e.status === 401 ? onSignedOut() : setError(String(e))),
+    [onSignedOut],
+  )
 ```
 
 3. `refreshSources` becomes admin-only. `/api/sources` returns 403 to a non-admin, so calling it unconditionally would paint an error banner for every ordinary user on page load:
