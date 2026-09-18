@@ -1563,10 +1563,12 @@ Expected: PASS. **The 18 tests retrofitted in Task 3 must still pass without fur
 - [ ] **Step 8: Confirm the constant is gone everywhere**
 
 ```bash
-grep -rn "DEFAULT_USER_ID" src/ tests/ web/ docs/ || echo "clean"
+grep -rn "DEFAULT_USER_ID" src/ tests/ web/src/ || echo "clean"
 ```
 
-Expected: only `docs/` hits, if any, plus the `test_default_user_id_is_gone` reference. No hit in `src/`.
+Expected: exactly one hit — the `test_default_user_id_is_gone` assertion in `tests/test_api_permissions.py`. **No hit in `src/`.**
+
+**Do not grep all of `docs/`, and do not edit anything under `docs/superpowers/specs/`, `docs/superpowers/plans/`, or `docs/superpowers/reviews/` other than this plan.** Those are the immutable historical record of earlier work — Plan 1's spec, plan, and per-task review reports legitimately describe `DEFAULT_USER_ID` as a thing that existed at that time, and rewriting them would falsify the decision record. The only living document that needs updating is `docs/architecture.md`, and that is Task 12's job, not yours.
 
 - [ ] **Step 9: Commit**
 
@@ -3688,13 +3690,17 @@ Expected: the Python suite green with zero warnings, the build clean, and 12 e2e
 
 ```bash
 cd /Users/dev2/Desktop/Testing
-grep -rn "DEFAULT_USER_ID" src/ docs/ web/src/ || echo "clean"
-grep -rn "no authentication" src/ docs/ || echo "clean"
+grep -rn "DEFAULT_USER_ID" src/ web/src/ docs/architecture.md || echo "clean"
+grep -rn "no authentication" src/ docs/architecture.md || echo "clean"
 git status --porcelain
 git check-ignore .env && echo ".env is ignored"
 ```
 
-The first two must be clean apart from the permissions test's reference. The last confirms `.env` — which holds `WEB_BASE_URL` and the database URLs — is still untracked.
+Both greps must come back clean.
+
+**Scope note — this is important.** The greps are deliberately limited to `src/`, `web/src/`, and `docs/architecture.md`. **Do not touch `docs/superpowers/specs/`, `docs/superpowers/plans/`, or `docs/superpowers/reviews/`.** Those are the preserved historical record of earlier slices (committed deliberately in `f978ec2`, "docs: preserve execution ledger and per-task reports"). Plan 1's spec and plan correctly describe `DEFAULT_USER_ID` and "no authentication" as facts *of their time*; editing them to match today would falsify the record of how this system got here. `docs/architecture.md` is the only living document that must reflect current reality.
+
+The last command confirms `.env` — which holds `WEB_BASE_URL` and the database URLs — is still untracked.
 
 - [ ] **Step 6: Commit**
 
