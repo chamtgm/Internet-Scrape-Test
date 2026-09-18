@@ -2995,10 +2995,12 @@ Append to `web/src/styles.css`:
 - [ ] **Step 8: Verify the build and lint**
 
 ```bash
-cd /Users/dev2/Desktop/Testing/web && npm run build && npm run lint
+cd /Users/dev2/Desktop/Testing/web && npm run build
 ```
 
-Expected: both clean. A failure here is almost always an unused import left behind in `App.jsx` after the body moved to `Store.jsx`.
+Expected: clean. A failure here is almost always an unresolved import left behind in `App.jsx` after the body moved to `Store.jsx`.
+
+**There is no `npm run lint`.** This project has never had ESLint — `web/package.json` defines only `dev`, `build`, `preview`, `seed:e2e`, and `test:e2e`, and there is no eslint config file. Do not add one: the global constraints forbid new dependencies, and wiring up a linter is not part of an auth slice. `vite build` is the build gate.
 
 - [ ] **Step 9: Verify by hand in a browser**
 
@@ -3228,10 +3230,10 @@ Append to `web/src/styles.css`:
 - [ ] **Step 5: Verify the build and lint**
 
 ```bash
-cd /Users/dev2/Desktop/Testing/web && npm run build && npm run lint
+cd /Users/dev2/Desktop/Testing/web && npm run build
 ```
 
-Expected: both clean.
+Expected: clean. There is no `npm run lint` in this project — see Task 9, Step 8.
 
 - [ ] **Step 6: Verify by hand**
 
@@ -3640,10 +3642,10 @@ In `web/README.md`, note in the e2e section that the specs sign in first, using 
 cd /Users/dev2/Desktop/Testing
 .venv/bin/pytest
 .venv/bin/python web/tests/seed_e2e.py
-cd web && npm run build && npm run lint && npm run test:e2e
+cd web && npm run build && npm run test:e2e
 ```
 
-Expected: the Python suite green with zero warnings, the build and lint clean, and 12 e2e tests passing.
+Expected: the Python suite green with zero warnings, the build clean, and 12 e2e tests passing.
 
 - [ ] **Step 5: Final consistency sweep**
 
