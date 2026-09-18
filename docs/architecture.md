@@ -78,7 +78,7 @@ These are enforced, not aspirational. Every one was verified tree-wide by the Pl
 
 ## 4. Data model
 
-Seven content tables, plus the two authentication tables described below.
+Nine tables. The seven below, plus `sessions` and `invites`, which are described after the table.
 
 | Table | Holds |
 |---|---|
