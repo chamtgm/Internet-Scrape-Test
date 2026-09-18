@@ -3031,7 +3031,18 @@ export default function App() {
   const [me, setMe] = useState(undefined)
   const [setupToken, setSetupToken] = useState(readSetupToken)
 
-  useEffect(() => { fetchMe().then(setMe).catch(() => setMe(null)) }, [])
+  // Distinct from "signed out": fetchMe() already returns null for a 401 and
+  // rethrows everything else, so anything landing in this catch is a real
+  // failure -- a 500, a dropped connection, a malformed response. Collapsing
+  // it into setMe(null) would render a login form during an outage and tell
+  // the user nothing.
+  const [bootError, setBootError] = useState(null)
+
+  useEffect(() => {
+    fetchMe()
+      .then(setMe)
+      .catch((e) => { setBootError(String(e)); setMe(null) })
+  }, [])
 
   const signedOut = useCallback(() => {
     setMe(null)
@@ -3041,9 +3052,17 @@ export default function App() {
 
   if (me === undefined) return <p className="booting">…</p>
   if (me === null) {
-    return setupToken
-      ? <Setup token={setupToken} onDone={setMe} />
-      : <Login onDone={setMe} />
+    // The banner sits above the form rather than replacing it: the failure may
+    // be transient, so let them try to sign in -- but never leave a real
+    // outage looking like an ordinary signed-out visit.
+    return (
+      <>
+        {bootError && <p className="error">Could not reach the server: {bootError}</p>}
+        {setupToken
+          ? <Setup token={setupToken} onDone={setMe} />
+          : <Login onDone={setMe} />}
+      </>
+    )
   }
   return <Store me={me} onSignedOut={signedOut} />
 }
