@@ -14,7 +14,7 @@ from fastapi import (
 from pydantic import AwareDatetime
 from sqlalchemy.orm import Session
 
-from reachstore import query
+from reachstore import query, store
 from reachstore.api import collect_runner
 from reachstore.api.auth import (
     COOKIE_NAME,
@@ -32,6 +32,8 @@ from reachstore.api.auth import (
 )
 from reachstore.api.deps import get_session
 from reachstore.api.schemas import (
+    CatalogEntryOut,
+    CatalogResponse,
     CollectRequest,
     CollectResponse,
     Cursor,
@@ -45,7 +47,7 @@ from reachstore.api.schemas import (
     SourceStatusOut,
     UserOut,
 )
-from reachstore.models import Item, User
+from reachstore.models import Item, Source, User
 
 router = APIRouter(prefix="/api")
 
@@ -141,17 +143,75 @@ def get_search(
     q: str = Query(..., min_length=1),
     kind: str | None = None,
     limit: int = Query(50, ge=1, le=query.MAX_LIMIT),
+    subscribed_only: bool = False,
     session: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> SearchResponse:
+    """`subscribed_only` narrows reading only.
+
+    Collection stays tier-driven: unsubscribing hides a source from your view
+    without stopping it being collected, and without affecting anyone else.
+    Filtering at read time is reversible; filtering at ingest is not.
+    """
     items = query.search(
         session,
         user_id=user.id,
         q=q,
         kinds=[kind] if kind else None,
+        subscribed_only=subscribed_only,
         limit=limit,
     )
     return SearchResponse(items=[_summary(i) for i in items])
+
+
+@router.get("/catalog", response_model=CatalogResponse)
+def get_catalog(
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> CatalogResponse:
+    """Every source, with this user's subscription flag.
+
+    Not admin-gated, because a non-admin has to see sources in order to
+    subscribe to them -- and `source_identifier` already appears on every feed
+    row, so identifiers were never operator-only. What is operator-only is the
+    health and control surface on /api/sources.
+    """
+    entries = query.catalog(session, user_id=user.id)
+    return CatalogResponse(sources=[CatalogEntryOut(**vars(e)) for e in entries])
+
+
+@router.put("/subscriptions/{source_id}", status_code=204, response_class=Response)
+def put_subscription(
+    source_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """PUT, not POST: the request means "make this subscription exist", which
+    is idempotent by definition, so the verb is too.
+
+    Returns an explicit empty Response rather than None. A 204 must carry no
+    body, and letting FastAPI serialise a None return value through the
+    default JSON response class is the kind of detail that differs between
+    versions -- being explicit costs one line and cannot regress.
+    """
+    if session.get(Source, source_id) is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    store.subscribe(session, user_id=user.id, source_id=source_id, now=datetime.now(UTC))
+    session.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/subscriptions/{source_id}", status_code=204, response_class=Response)
+def delete_subscription(
+    source_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """204 even when no subscription existed -- the caller's desired state is
+    reached either way, and a 404 here would leak nothing useful."""
+    store.unsubscribe(session, user_id=user.id, source_id=source_id)
+    session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/items/{item_id}", response_model=ItemDetail)

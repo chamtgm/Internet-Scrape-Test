@@ -7,11 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from reachstore.adapters.base import NormalizedItem
-from reachstore.models import Item
+from reachstore.models import Item, Subscription
 
 
 def content_hash(text: str) -> str:
@@ -67,3 +68,33 @@ def upsert_items(
             inserted += 1
     session.flush()
     return inserted
+
+
+def subscribe(session: Session, *, user_id: int, source_id: int, now: datetime) -> None:
+    """Idempotent. Reactivates a row left inactive by `unsubscribe`.
+
+    ON CONFLICT rather than a read-then-insert: two concurrent requests would
+    both see no row and both insert, and one would get an IntegrityError from
+    uq_subscriptions_user_source. The database settles it in one statement --
+    the same reasoning as upsert_items.
+    """
+    session.execute(
+        insert(Subscription)
+        .values(user_id=user_id, source_id=source_id, active=True, created_at=now)
+        .on_conflict_do_update(
+            constraint="uq_subscriptions_user_source", set_={"active": True}
+        )
+    )
+
+
+def unsubscribe(session: Session, *, user_id: int, source_id: int) -> None:
+    """Idempotent: clears `active`, and updating zero rows is not an error.
+
+    The row survives so that re-subscribing keeps the original created_at and
+    any label, and so `subscribe`'s ON CONFLICT has something to update.
+    """
+    session.execute(
+        update(Subscription)
+        .where(Subscription.user_id == user_id, Subscription.source_id == source_id)
+        .values(active=False)
+    )

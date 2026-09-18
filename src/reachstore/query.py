@@ -167,6 +167,50 @@ def get_source(session: Session, *, kind: str, identifier: str) -> Source | None
 
 
 @dataclass(frozen=True)
+class CatalogEntry:
+    """A source as a non-admin sees it: enough to decide whether to subscribe,
+    and nothing about its health. Diagnostics stay in SourceStatus, which only
+    /api/sources returns."""
+
+    source_id: int
+    kind: str
+    identifier: str
+    tier: int
+    subscribed: bool
+
+
+def catalog(session: Session, *, user_id: int) -> list[CatalogEntry]:
+    """Every source, flagged with whether this user subscribes to it.
+
+    A LEFT JOIN rather than two queries and a set intersection: one round trip,
+    and the flag cannot drift from the row it describes.
+    """
+    rows = session.execute(
+        select(
+            Source.id,
+            Source.kind,
+            Source.identifier,
+            Source.tier,
+            Subscription.id.isnot(None),
+        )
+        .select_from(Source)
+        .outerjoin(
+            Subscription,
+            (Subscription.source_id == Source.id)
+            & (Subscription.user_id == user_id)
+            & (Subscription.active.is_(True)),
+        )
+        .order_by(Source.tier, Source.identifier)
+    ).all()
+    return [
+        CatalogEntry(
+            source_id=r[0], kind=r[1], identifier=r[2], tier=r[3], subscribed=bool(r[4])
+        )
+        for r in rows
+    ]
+
+
+@dataclass(frozen=True)
 class SourceStatus:
     source_id: int
     kind: str
