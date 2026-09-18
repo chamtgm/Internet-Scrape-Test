@@ -166,6 +166,16 @@ def get_source(session: Session, *, kind: str, identifier: str) -> Source | None
     return session.execute(stmt).scalars().one_or_none()
 
 
+def get_source_by_id(session: Session, source_id: int) -> Source | None:
+    """Look up a source by primary key, or None.
+
+    Exists so `routes.put_subscription` can answer "does this source exist?"
+    without building a query in the HTTP layer -- `routes.py` owns no SQL, and
+    `query.py` already owns every read of `sources`.
+    """
+    return session.get(Source, source_id)
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     """A source as a non-admin sees it: enough to decide whether to subscribe,

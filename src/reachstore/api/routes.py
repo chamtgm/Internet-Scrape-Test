@@ -26,6 +26,7 @@ from reachstore.api.auth import (
     find_user_by_email,
     get_current_user,
     hash_password,
+    normalize_email,
     require_admin,
     spend_dummy_verify,
     verify_password,
@@ -47,7 +48,7 @@ from reachstore.api.schemas import (
     SourceStatusOut,
     UserOut,
 )
-from reachstore.models import Item, Source, User
+from reachstore.models import Item, User
 
 router = APIRouter(prefix="/api")
 
@@ -194,7 +195,7 @@ def put_subscription(
     default JSON response class is the kind of detail that differs between
     versions -- being explicit costs one line and cannot regress.
     """
-    if session.get(Source, source_id) is None:
+    if query.get_source_by_id(session, source_id) is None:
         raise HTTPException(status_code=404, detail="source not found")
     store.subscribe(session, user_id=user.id, source_id=source_id, now=datetime.now(UTC))
     session.commit()
@@ -343,7 +344,10 @@ def post_setup(
         raise HTTPException(status_code=409, detail="that email already has an account")
 
     user = User(
-        email=invite.email,
+        # Normalised again rather than trusted from the invite row: `create_invite`
+        # canonicalises on the way in, but an invite issued before that did not,
+        # and this is the one place a `users.email` is written.
+        email=normalize_email(invite.email),
         display_name=invite.display_name,
         password_hash=hash_password(body.password),
         is_admin=invite.is_admin,

@@ -158,3 +158,34 @@ def test_revoke_sessions_deletes_them_and_reports_the_count(cli_session):
     assert result.exit_code == 0
     assert "2" in result.stdout
     assert cli_session.execute(select(func.count(UserSession.id))).scalar() == 0
+
+
+def test_invite_rejects_a_duplicate_that_differs_only_in_case(cli_session):
+    """`find_user_by_email` normalises, so the duplicate check is
+    case-insensitive. Without it the operator would issue a second invite for
+    what is really the same person, and setup would then fail with a 409 they
+    have no way to interpret."""
+    from datetime import UTC, datetime
+
+    cli_session.add(
+        User(
+            email="taken@example.test",
+            display_name="Taken",
+            created_at=datetime(2026, 9, 18, tzinfo=UTC),
+        )
+    )
+    cli_session.flush()
+
+    result = runner.invoke(cli.app, ["invite", "Taken@Example.TEST", "--name", "Dup"])
+    assert result.exit_code == 1
+    assert "already" in result.stdout.lower()
+
+
+def test_invite_stores_the_email_lowercased(cli_session):
+    """So the account the link creates is reachable from whatever case the
+    person types at the login form."""
+    from sqlalchemy import select
+
+    result = runner.invoke(cli.app, ["invite", "Mixed@Case.TEST", "--name", "Mixed"])
+    assert result.exit_code == 0
+    assert cli_session.execute(select(Invite)).scalars().one().email == "mixed@case.test"

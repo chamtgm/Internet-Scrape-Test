@@ -206,3 +206,41 @@ def test_setup_is_409_when_the_email_already_has_an_account(anon_client, session
         "/api/auth/setup", json={"token": token, "password": "a-good-password"}
     )
     assert response.status_code == 409
+
+
+def test_setup_creates_a_lowercased_account_that_logs_in_lowercased(anon_client, session):
+    """An invite issued for `Mixed@Case.test` produces an account that logs in
+    as `mixed@case.test`.
+
+    The invitee never types their address during setup, so they never learn
+    which case the operator used. Without normalisation a case mismatch at the
+    login form returns the deliberately identical "email or password is
+    incorrect", which neither they nor the operator can tell from a wrong
+    password.
+    """
+    token = _invite(session, email="Mixed@Case.test")
+
+    created = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    )
+    assert created.status_code == 200
+    assert created.json()["email"] == "mixed@case.test"
+
+    anon_client.post("/api/auth/logout")
+    assert (
+        anon_client.post(
+            "/api/auth/login",
+            json={"email": "mixed@case.test", "password": "a-good-password"},
+        ).status_code
+        == 200
+    )
+
+
+def test_login_accepts_any_case_of_a_stored_email(anon_client, make_user):
+    """The other direction: an account stored lowercase is reachable from the
+    mixed-case form an operator may have handed out."""
+    _user, password = make_user(email="cased@example.test")
+    response = anon_client.post(
+        "/api/auth/login", json={"email": "  CaSeD@Example.TEST  ", "password": password}
+    )
+    assert response.status_code == 200

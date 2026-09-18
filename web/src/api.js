@@ -2,9 +2,13 @@
 // apart from a real failure, and `new Error('401 Unauthorized')` would force
 // callers to parse a string to find out.
 export class ApiError extends Error {
-  constructor(status, statusText) {
+  constructor(status, statusText, body = null) {
     super(`${status} ${statusText}`)
     this.status = status
+    // The parsed error body when the server sent one, else null. POST /collect
+    // answers 409 with a `reason` the user needs to see; without carrying it
+    // here the caller has to bypass this helper to get at it.
+    this.body = body
   }
 }
 
@@ -25,7 +29,12 @@ async function send(method, path, body) {
       ? {}
       : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   })
-  if (!res.ok) throw new ApiError(res.status, res.statusText)
+  // `.catch(() => null)` deliberately, not a bare await: a proxy error page or
+  // a dead API answers with HTML, and letting the JSON parse throw would
+  // replace an ApiError carrying a real status with a bare SyntaxError that
+  // carries none -- which is exactly how a server outage gets mistaken for an
+  // ordinary 401 logout.
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await res.json().catch(() => null))
   return res.status === 204 ? null : res.json()
 }
 
@@ -70,11 +79,7 @@ export const fetchCatalog = () => get('/catalog')
 export const subscribe = (sourceId) => send('PUT', `/subscriptions/${sourceId}`)
 export const unsubscribe = (sourceId) => send('DELETE', `/subscriptions/${sourceId}`)
 
-export async function startCollect(tier, force = false) {
-  const res = await fetch('/api/collect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tier, force }),
-  })
-  return { ok: res.ok, ...(await res.json()) }
-}
+// Throws ApiError like every other write, rather than returning {ok:false}.
+// The 409 `reason` survives on the error's `body`; a 401 reaches the caller as
+// a 401 instead of an `undefined` reason and a misleading banner.
+export const startCollect = (tier, force = false) => send('POST', '/collect', { tier, force })

@@ -121,11 +121,14 @@ export default function Store({ me, onSignedOut }) {
           if (!searchingRef.current) loadFeed()
         }
       } catch (e) {
-        if (!cancelled && sourcesIdRef.current === reqId) { setError(String(e)); setCollecting(false) }
+        // Through `fail`, not setError: a session revoked mid-run is a 401, and
+        // showing "401 Unauthorized" in the banner would leave a dead UI on
+        // screen instead of dropping back to the login form.
+        if (!cancelled && sourcesIdRef.current === reqId) { fail(e); setCollecting(false) }
       }
     }, 2000)
     return () => { cancelled = true; clearInterval(id) }
-  }, [collecting, loadFeed])
+  }, [collecting, loadFeed, fail])
 
   const select = (id) => {
     setError(null)
@@ -183,10 +186,15 @@ export default function Store({ me, onSignedOut }) {
     setCollectPending(true)
     setError(null)
     try {
-      const res = await startCollect(tier)
-      if (!res.ok) { setError(res.reason ?? 'could not start collection'); return }
+      await startCollect(tier)
       setCollecting(true)
-    } catch (e) { fail(e) } finally { collectPendingRef.current = false; setCollectPending(false) }
+    } catch (e) {
+      // 409 is the one failure that carries something worth reading -- "a
+      // collection run is already in progress". Everything else, 401 included,
+      // goes through `fail`.
+      if (e.status === 409) setError(e.body?.reason ?? 'could not start collection')
+      else fail(e)
+    } finally { collectPendingRef.current = false; setCollectPending(false) }
   }
 
   const signOut = async () => {

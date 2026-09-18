@@ -119,6 +119,21 @@ def _digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def normalize_email(email: str) -> str:
+    """The canonical form of an address: stripped and lowercased.
+
+    Applied everywhere an email enters or is looked up, so `Alice@Example.com`
+    and `alice@example.com` are one account. Not a security measure -- invites
+    come from someone with shell access -- but a lockout that cannot be
+    diagnosed: the invitee never types their address during setup, so they
+    never learn which case the operator used, and login deliberately answers a
+    wrong password and an unknown email identically. Without this, a
+    case-mismatched login is indistinguishable from a wrong password to the
+    person locked out and to the operator both.
+    """
+    return email.strip().lower()
+
+
 def create_session(session: Session, *, user_id: int, now: datetime) -> str:
     """Issue a session and return the RAW token -- the only time it exists.
 
@@ -179,7 +194,7 @@ def create_invite(
     token = secrets.token_urlsafe(32)
     session.add(
         Invite(
-            email=email,
+            email=normalize_email(email),
             display_name=display_name,
             is_admin=is_admin,
             token_hash=_digest(token),
@@ -210,9 +225,12 @@ def find_user_by_email(session: Session, email: str) -> User | None:
 
     Used by login now; the invite-setup and password-reset flows (Tasks 6-7)
     need the same lookup, so it lives here rather than being duplicated --
-    `auth.py` already owns every query against `users`.
+    `auth.py` already owns every query against `users`. Normalising here rather
+    than at each caller is what makes login, `invite`'s duplicate check,
+    `set-password`, and `revoke-sessions` all case-insensitive at once.
     """
-    return session.execute(select(User).where(User.email == email)).scalars().one_or_none()
+    stmt = select(User).where(User.email == normalize_email(email))
+    return session.execute(stmt).scalars().one_or_none()
 
 
 def get_current_user(

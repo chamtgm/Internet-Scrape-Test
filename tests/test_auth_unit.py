@@ -236,8 +236,12 @@ def test_get_current_user_expired_token_is_401(session):
 
 
 def test_get_current_user_valid_token_returns_the_user(session):
+    """Real clock, not NOW: `get_current_user` checks expiry against
+    `datetime.now(UTC)`, so a session stamped with a literal date expires
+    SESSION_LIFETIME after that date and this test would start failing on its
+    own. Same reasoning as conftest.py's `client_for` fixture."""
     user = make_user(session)
-    token = auth.create_session(session, user_id=user.id, now=NOW)
+    token = auth.create_session(session, user_id=user.id, now=datetime.now(UTC))
     found = auth.get_current_user(session=session, token=token)
     assert found.id == user.id
 
