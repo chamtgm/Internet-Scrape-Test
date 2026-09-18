@@ -38,3 +38,20 @@ body { margin:0; background:var(--bg); color:var(--fg);
 .detail-title a { color:var(--fg); }
 .detail-meta { color:var(--dim); font-size:.78rem; margin:0 0 .9rem; }
 .detail-body { white-space:pre-wrap; }
+
+.booting { color:var(--dim); padding:2rem; text-align:center; }
+.auth { max-width:20rem; margin:4rem auto; display:flex; flex-direction:column; gap:.35rem; }
+.auth h1 { font-size:1.15rem; margin:0 0 .8rem; }
+.auth label { font-size:.78rem; color:var(--dim); }
+.auth input { padding:.45rem .6rem; background:#1a1a1a; color:var(--fg);
+  border:1px solid var(--line); border-radius:4px; font:inherit; }
+.auth button { margin-top:.7rem; padding:.5rem; background:var(--accent); color:#0b0b0b;
+  border:0; border-radius:4px; cursor:pointer; font:inherit; font-weight:600; }
+.auth button:disabled { opacity:.55; cursor:default; }
+.auth-note { color:var(--dim); font-size:.75rem; margin:.9rem 0 0; }
+.header-row { display:flex; align-items:baseline; justify-content:space-between; gap:1rem; }
+.whoami { color:var(--dim); font-size:.78rem; white-space:nowrap; }
+.badge { margin-left:.4rem; padding:.05rem .3rem; border:1px solid var(--line);
+  border-radius:3px; font-size:.68rem; }
+.signout { margin-left:.6rem; background:none; border:0; color:var(--accent);
+  cursor:pointer; font:inherit; font-size:.78rem; padding:0; }
