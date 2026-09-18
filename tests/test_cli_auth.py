@@ -189,3 +189,19 @@ def test_invite_stores_the_email_lowercased(cli_session):
     result = runner.invoke(cli.app, ["invite", "Mixed@Case.TEST", "--name", "Mixed"])
     assert result.exit_code == 0
     assert cli_session.execute(select(Invite)).scalars().one().email == "mixed@case.test"
+
+
+def test_invite_echoes_the_address_as_it_is_stored(cli_session):
+    """The confirmation must show the canonical address, not the typed one.
+
+    Echoing the operator's casing back at them is how they end up believing
+    `Alice@Example.com` is a thing that exists. It is not -- only
+    `alice@example.com` is -- and the anti-enumeration 401 means neither they
+    nor Alice can tell that apart from a wrong password later.
+    """
+    result = runner.invoke(
+        cli.app, ["invite", "  Mixed@Case.test ", "--name", "Mixed Case"]
+    )
+    assert result.exit_code == 0
+    assert "mixed@case.test" in result.stdout
+    assert "Mixed@Case.test" not in result.stdout

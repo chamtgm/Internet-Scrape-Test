@@ -346,7 +346,7 @@ def post_setup(
     user = User(
         # Normalised again rather than trusted from the invite row: `create_invite`
         # canonicalises on the way in, but an invite issued before that did not,
-        # and this is the one place a `users.email` is written.
+        # and this is the one place in `src/` a `users.email` is written.
         email=normalize_email(invite.email),
         display_name=invite.display_name,
         password_hash=hash_password(body.password),

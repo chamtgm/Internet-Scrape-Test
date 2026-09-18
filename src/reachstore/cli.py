@@ -14,6 +14,7 @@ from reachstore.api.auth import (
     delete_all_sessions,
     find_user_by_email,
     hash_password,
+    normalize_email,
 )
 from reachstore.collect import collect_tier
 from reachstore.config import get_settings
@@ -145,6 +146,10 @@ def invite(
     has shell access to this machine. That is the entire access-control story
     for a localhost tool.
     """
+    # Normalise once, up front, so every echo below reports the address as it
+    # is actually stored. Echoing the operator's casing would leave them
+    # believing an address exists in a form the database does not hold.
+    email = normalize_email(email)
     session = _session()
     try:
         existing = find_user_by_email(session, email)

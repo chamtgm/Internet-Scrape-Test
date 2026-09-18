@@ -27,10 +27,20 @@ free — the API server is started fresh for the test run, never reused, so it d
 run against a database someone else pointed it at. It seeds and asserts an exact 12 items/1
 source, so a fresh clone with `npm ci` behaves the same as any other checkout.
 
-The specs sign in first, using the admin account `seed_e2e.py` creates
+Most specs sign in first, using the admin account `seed_e2e.py` creates
 (`e2e-admin@example.test`). Those credentials are duplicated in `seed_e2e.py`
 and in the spec files themselves (`smoke.spec.js`, `auth.spec.js`) rather than
 shared from one place, so all three must be kept in step by hand.
+
+The setup spec is the exception: it creates its own account by consuming an
+invite. `seed_e2e.py` issues that invite and writes the raw token to
+`tests/.e2e-invite-token`, which is gitignored — a single-use credential, even
+one for a throwaway database, does not belong in the repository. `auth.spec.js`
+reads that file at load time, so run the suite through `npm run test:e2e`,
+which always seeds first. Running `npx playwright test` directly against a
+fresh clone fails the whole file with `ENOENT` on that path. Re-running is
+safe: each seed deletes and reissues both the account and the invite, so a
+consumed invite never breaks the next run.
 
 `@playwright/test` needs a matching Chromium build downloaded to
 `~/Library/Caches/ms-playwright`. If `npm run test:e2e` fails with

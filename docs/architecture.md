@@ -51,7 +51,7 @@ Each layer depends only on those below it.
 
 These are enforced, not aspirational. Every one was verified tree-wide by the Plan 1 final review.
 
-**All content SQL lives in `store.py` and `query.py`.** No other module builds a query against a content table. When `collect.py` needed three queries, they were added to `query.py` rather than inlined — the constraint won over the reference implementation. Authentication widened this to *one owning module per table* (below) rather than weakening it: `api/auth.py` may query `users`, `sessions`, and `invites`, and nothing else may.
+**All content SQL lives in `store.py` and `query.py`.** No other module in `src/` builds a query against a content table (test fixtures under `tests/` and `web/tests/` set up state directly, as fixtures do). When `collect.py` needed three queries, they were added to `query.py` rather than inlined — the constraint won over the reference implementation. Authentication widened this to *one owning module per table* (below) rather than weakening it: `api/auth.py` may query `users`, `sessions`, and `invites`, and nothing else may.
 
 **The tenant predicate appears in exactly one function.** `query.visible_to(user_id)` returns `owner_user_id IS NULL OR owner_user_id = :user_id`. `get_item`, `feed`, and `search` all call it; none re-expresses it. This is the security boundary of a multi-tenant store, and a second copy is how it erodes.
 
