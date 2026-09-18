@@ -18,11 +18,14 @@ from reachstore import query
 from reachstore.api import collect_runner
 from reachstore.api.auth import (
     COOKIE_NAME,
+    MIN_PASSWORD_LENGTH,
     SESSION_LIFETIME,
+    consume_invite,
     create_session,
     delete_session,
     find_user_by_email,
     get_current_user,
+    hash_password,
     require_admin,
     spend_dummy_verify,
     verify_password,
@@ -37,6 +40,7 @@ from reachstore.api.schemas import (
     ItemSummary,
     LoginRequest,
     SearchResponse,
+    SetupRequest,
     SourcesResponse,
     SourceStatusOut,
     UserOut,
@@ -236,4 +240,59 @@ def post_logout(
 
 @router.get("/auth/me", response_model=UserOut)
 def get_me(user: User = Depends(get_current_user)) -> UserOut:
+    return _user_out(user)
+
+
+@router.post("/auth/setup", response_model=UserOut)
+def post_setup(
+    body: SetupRequest, response: Response, session: Session = Depends(get_session)
+) -> UserOut:
+    """Redeem an invite: create the account and log it straight in.
+
+    Unauthenticated by design -- it is how someone with no account gets one.
+    Its access control is possession of a token that exists in exactly one
+    place, the URL the operator handed over.
+
+    One 400 with one message for every token failure -- unknown, already
+    consumed, expired, password too short -- because distinguishing them would
+    let a stranger probe which invites exist.
+
+    An email that already has an account is the exception, and returns 409:
+    whoever holds the token already knows the email it names, so the
+    distinction leaks nothing they did not supply, and it is the one failure a
+    person can act on.
+    """
+    now = datetime.now(UTC)
+
+    # Validate the password BEFORE consuming the invite. Consuming first would
+    # mean a typo burns a single-use link and the person has to go back to the
+    # operator for a new one.
+    if len(body.password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail="invalid or expired setup link")
+
+    invite = consume_invite(session, token=body.token, now=now)
+    if invite is None:
+        raise HTTPException(status_code=400, detail="invalid or expired setup link")
+
+    taken = find_user_by_email(session, invite.email)
+    if taken is not None:
+        # The invite predates an account that now exists. It is spent either
+        # way -- rolling it back would leave a link that can be retried
+        # forever against an existing account.
+        session.commit()
+        raise HTTPException(status_code=409, detail="that email already has an account")
+
+    user = User(
+        email=invite.email,
+        display_name=invite.display_name,
+        password_hash=hash_password(body.password),
+        is_admin=invite.is_admin,
+        created_at=now,
+    )
+    session.add(user)
+    session.flush()
+
+    token = create_session(session, user_id=user.id, now=now)
+    session.commit()
+    _set_session_cookie(response, token)
     return _user_out(user)

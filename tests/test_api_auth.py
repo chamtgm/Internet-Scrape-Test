@@ -1,3 +1,6 @@
+from datetime import UTC, datetime, timedelta
+
+from reachstore.api import auth
 from reachstore.api.auth import COOKIE_NAME
 
 
@@ -82,3 +85,124 @@ def test_logout_without_a_session_is_401(anon_client):
 def test_admin_flag_is_reported(client_for):
     client, _user, _pw = client_for(is_admin=True)
     assert client.get("/api/auth/me").json()["is_admin"] is True
+
+
+# --- setup -------------------------------------------------------------------
+
+
+def _invite(session, *, email="invited@example.test", is_admin=False):
+    return auth.create_invite(
+        session,
+        email=email,
+        display_name="Invited",
+        is_admin=is_admin,
+        now=datetime.now(UTC),
+    )
+
+
+def test_setup_creates_the_account_and_logs_it_in(anon_client, session):
+    token = _invite(session)
+
+    response = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    )
+    assert response.status_code == 200
+    assert response.json()["email"] == "invited@example.test"
+    assert response.json()["display_name"] == "Invited"
+    assert COOKIE_NAME in response.cookies
+
+    # Already logged in -- no second trip through login.
+    assert anon_client.get("/api/auth/me").status_code == 200
+
+
+def test_setup_carries_the_invited_admin_flag(anon_client, session):
+    token = _invite(session, email="newboss@example.test", is_admin=True)
+    body = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    ).json()
+    assert body["is_admin"] is True
+
+
+def test_the_new_account_can_log_in_afterwards(anon_client, session):
+    token = _invite(session, email="later@example.test")
+    anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    )
+    anon_client.post("/api/auth/logout")
+
+    response = anon_client.post(
+        "/api/auth/login",
+        json={"email": "later@example.test", "password": "a-good-password"},
+    )
+    assert response.status_code == 200
+
+
+def test_setup_token_works_exactly_once(anon_client, session):
+    token = _invite(session, email="once@example.test")
+    assert (
+        anon_client.post(
+            "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+        ).status_code
+        == 200
+    )
+    second = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "another-password"}
+    )
+    assert second.status_code == 400
+
+
+def test_setup_rejects_an_unknown_token(anon_client):
+    response = anon_client.post(
+        "/api/auth/setup", json={"token": "never-issued", "password": "a-good-password"}
+    )
+    assert response.status_code == 400
+
+
+def test_setup_rejects_an_expired_invite(anon_client, session):
+    """Stamped far enough in the past that the handler's real clock is past
+    expiry, since the handler reads datetime.now(UTC) and cannot be injected."""
+    long_ago = datetime.now(UTC) - auth.INVITE_LIFETIME - timedelta(days=1)
+    token = auth.create_invite(
+        session,
+        email="stale@example.test",
+        display_name="Stale",
+        is_admin=False,
+        now=long_ago,
+    )
+    response = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    )
+    assert response.status_code == 400
+
+
+def test_setup_rejects_a_short_password_without_consuming_the_invite(anon_client, session):
+    """Validation must come before consumption, or a typo burns the link and
+    the person has to ask the operator for a new one."""
+    token = _invite(session, email="typo@example.test")
+
+    assert (
+        anon_client.post("/api/auth/setup", json={"token": token, "password": "abc"}).status_code
+        == 400
+    )
+    assert (
+        anon_client.post(
+            "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+        ).status_code
+        == 200
+    )
+
+
+def test_setup_is_409_when_the_email_already_has_an_account(anon_client, session, make_user):
+    """An invite issued before the account existed must not be able to take it
+    over. 409 rather than the uniform 400, per the spec: the holder of the
+    token already knows the email it names, so saying "that account exists"
+    leaks nothing they did not supply, and it is the one failure a person can
+    actually act on.
+    """
+    make_user(email="collide@example.test")
+    token = _invite(session, email="collide@example.test")
+
+    response = anon_client.post(
+        "/api/auth/setup", json={"token": token, "password": "a-good-password"}
+    )
+    assert response.status_code == 409
