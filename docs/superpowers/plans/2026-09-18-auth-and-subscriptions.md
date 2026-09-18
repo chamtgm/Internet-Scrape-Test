@@ -1753,20 +1753,21 @@ Hardcoding 5173 in the invite output would print a broken link in production, wh
 
 - [ ] **Step 4: Add the CLI commands**
 
-In `src/reachstore/cli.py`, add to the imports:
+In `src/reachstore/cli.py`, adjust the imports. Its current block was read to confirm each point:
+
+- `from datetime import UTC, datetime` is **already present** — do not add it again.
+- `get_settings` is **already imported** from `reachstore.config`.
+- There is **no** `from sqlalchemy import ...` line. Add `from sqlalchemy import select`.
+- It imports `from reachstore.models import Source`. Extend that line to `from reachstore.models import Source, User`.
+- Add the auth import:
 
 ```python
-from datetime import UTC, datetime
-
-from sqlalchemy import select
-
 from reachstore.api.auth import (
     MIN_PASSWORD_LENGTH,
     create_invite,
     delete_all_sessions,
     hash_password,
 )
-from reachstore.models import User
 ```
 
 Append the three commands:
@@ -2386,7 +2387,7 @@ def catalog(session: Session, *, user_id: int) -> list[CatalogEntry]:
     ]
 ```
 
-Add `Subscription` to the `reachstore.models` import in `query.py` if it is not already there.
+**Add no imports to `query.py`.** It already has `dataclass`, `select`, `Session`, and `Subscription` — its import block was read to confirm this.
 
 - [ ] **Step 4: Add the writers to `store.py`**
 
@@ -2402,7 +2403,7 @@ def subscribe(session: Session, *, user_id: int, source_id: int, now: datetime) 
     the same reasoning as upsert_items.
     """
     session.execute(
-        pg_insert(Subscription)
+        insert(Subscription)
         .values(user_id=user_id, source_id=source_id, active=True, created_at=now)
         .on_conflict_do_update(
             constraint="uq_subscriptions_user_source", set_={"active": True}
@@ -2423,7 +2424,12 @@ def unsubscribe(session: Session, *, user_id: int, source_id: int) -> None:
     )
 ```
 
-`store.py` already imports `pg_insert` (as `from sqlalchemy.dialects.postgresql import insert as pg_insert`) for `upsert_items`; reuse that name rather than adding a second alias. Add `update` to the `sqlalchemy` import and `Subscription` to the models import.
+Imports, stated exactly — `store.py`'s current import block was read to confirm each of these:
+
+- It already has `from sqlalchemy.dialects.postgresql import insert` (**no alias**). Use the bare name `insert`; do not add a second aliased import of the same symbol.
+- It has **no** `from sqlalchemy import ...` line at all. Add one: `from sqlalchemy import update`.
+- It imports `from reachstore.models import Item`. Extend that line to `from reachstore.models import Item, Subscription`.
+- `datetime` and `Session` are already imported.
 
 - [ ] **Step 5: Add the schemas**
 
@@ -3502,7 +3508,7 @@ Also update the `RuntimeError` message, which repeats the stale claim:
     )
 ```
 
-Run `.venv/bin/pytest tests/test_api_app.py -v` afterwards — one of its three tests asserts on `assert_loopback`. If it matches on message text, update the assertion to match the new message.
+Run `.venv/bin/pytest tests/test_api_app.py -v` afterwards. It should pass **unchanged**: `test_non_loopback_host_is_refused` asserts only that `"REACHSTORE_ALLOW_NONLOCAL"` appears in the message, and the replacement text above still contains it. If that test fails, your replacement dropped the override name — restore it rather than weakening the assertion.
 
 - [ ] **Step 2: Update `docs/architecture.md`**
 
