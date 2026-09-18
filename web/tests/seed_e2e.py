@@ -7,7 +7,10 @@ so re-running adds nothing. It also resets the seeded user's subscriptions to
 unsubscribed on every run: `unsubscribe` is a soft delete that only clears
 `active` (see store.py), so without this reset a second `npm run test:e2e`
 would start with a subscription already in place and fail the "nothing
-subscribed" precondition. Safe to run before every e2e invocation.
+subscribed" precondition. For the same reason it re-issues the setup invite and
+deletes the account the previous run's setup test created -- an invite is
+single-use, so without both a second run would meet a spent link. Safe to run
+before every e2e invocation.
 
 Note: pytest's `engine` fixture runs DROP SCHEMA on this same database at
 session scope, so do not run the Python suite and the e2e suite concurrently.
@@ -21,13 +24,13 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from reachstore.adapters.base import NormalizedItem
-from reachstore.api.auth import hash_password
+from reachstore.api.auth import create_invite, hash_password
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
-from reachstore.models import Source, Subscription, User
+from reachstore.models import Invite, Source, Subscription, User
 from reachstore.store import upsert_items
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
@@ -39,6 +42,14 @@ RAW_DIR = Path("data/raw-e2e")
 # the start of every run.
 E2E_EMAIL = "e2e-admin@example.test"
 E2E_PASSWORD = "e2e-password-1234"
+
+# The setup-flow spec needs a live invite token. `create_invite` returns the raw
+# token exactly once and stores only its SHA-256, so the spec cannot hardcode
+# one -- it is written here for auth.spec.js to read. Gitignored, and only ever
+# valid against the *_test database.
+E2E_INVITE_EMAIL = "e2e-invitee@example.test"
+E2E_INVITE_NAME = "E2E Invitee"
+INVITE_TOKEN_FILE = Path("web/tests/.e2e-invite-token")
 
 
 def main() -> None:
@@ -98,6 +109,24 @@ def main() -> None:
             update(Subscription).where(Subscription.user_id == user.id).values(active=False)
         )
 
+        # A fresh invite every run, and the account the previous run's setup test
+        # created removed with it. An invite is single-use and setup 409s on an
+        # email that already has an account, so without both a second
+        # `npm run test:e2e` would fail on a spent link. Real clock, not NOW:
+        # NOW is a fixed date well outside INVITE_LIFETIME, which would seed an
+        # already-expired invite. Deleting the user cascades to its sessions and
+        # subscriptions (see models.py).
+        session.execute(delete(User).where(User.email == E2E_INVITE_EMAIL))
+        session.execute(delete(Invite).where(Invite.email == E2E_INVITE_EMAIL))
+        invite_token = create_invite(
+            session,
+            email=E2E_INVITE_EMAIL,
+            display_name=E2E_INVITE_NAME,
+            is_admin=False,
+            now=datetime.now(UTC),
+        )
+        INVITE_TOKEN_FILE.write_text(invite_token)
+
         items = [
             NormalizedItem(
                 external_id=f"e2e-{i}",
@@ -120,7 +149,10 @@ def main() -> None:
             now=NOW,
         )
         session.commit()
-        print(f"seeded {COUNT} items ({new} new) and admin {E2E_EMAIL} into {url.rsplit('/', 1)[-1]}")
+        print(
+            f"seeded {COUNT} items ({new} new), admin {E2E_EMAIL}, and an invite "
+            f"for {E2E_INVITE_EMAIL} into {url.rsplit('/', 1)[-1]}"
+        )
     finally:
         session.close()
 

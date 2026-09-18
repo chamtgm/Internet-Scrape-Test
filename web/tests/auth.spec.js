@@ -1,7 +1,16 @@
+import fs from 'node:fs'
 import { expect, test } from '@playwright/test'
 
 const EMAIL = 'e2e-admin@example.test'
 const PASSWORD = 'e2e-password-1234'
+
+// seed_e2e.py re-issues this invite on every run and deletes the account the
+// previous run's setup test created, so the link below is always unspent.
+// Read rather than hardcoded: create_invite stores only the token's SHA-256
+// and hands back the raw value once.
+const INVITE_TOKEN = fs
+  .readFileSync(new URL('.e2e-invite-token', import.meta.url), 'utf8')
+  .trim()
 
 test('an anonymous visit shows the login form, not the feed', async ({ page }) => {
   await page.goto('/')
@@ -101,5 +110,26 @@ test('subscribing from the strip filters a subscribed-only search', async ({ pag
   await checkbox.click()
   await expect(checkbox).toBeChecked()
   await page.getByLabel('search').press('Enter')
+  await expect(page.locator('.item-row')).toHaveCount(12)
+})
+
+test('a valid setup link creates the account and lands in the store', async ({ page }) => {
+  await page.goto(`/#setup=${INVITE_TOKEN}`)
+  await expect(page.locator('.auth h1')).toHaveText('Choose a password')
+
+  await page.getByLabel('Password', { exact: true }).fill('a-good-password')
+  await page.getByLabel('Confirm password').fill('a-good-password')
+  await page.getByRole('button', { name: 'Create account' }).click()
+
+  // Straight into the store, already signed in -- no second trip through login.
+  await expect(page.locator('.item-row')).toHaveCount(12)
+  await expect(page.locator('.whoami')).toContainText('E2E Invitee')
+  // Invited as a normal user, so no operator surface.
+  await expect(page.locator('.badge')).toHaveCount(0)
+
+  // The token is gone from the address bar, so a reload cannot retry a link
+  // that is now spent.
+  expect(new URL(page.url()).hash).toBe('')
+  await page.reload()
   await expect(page.locator('.item-row')).toHaveCount(12)
 })

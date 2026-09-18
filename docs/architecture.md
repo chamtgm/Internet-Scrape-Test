@@ -51,7 +51,7 @@ Each layer depends only on those below it.
 
 These are enforced, not aspirational. Every one was verified tree-wide by the Plan 1 final review.
 
-**All SQL lives in `store.py` and `query.py`.** No other module imports `sqlalchemy.select` or builds a query. When `collect.py` needed three queries, they were added to `query.py` rather than inlined — the constraint won over the reference implementation.
+**All content SQL lives in `store.py` and `query.py`.** No other module builds a query against a content table. When `collect.py` needed three queries, they were added to `query.py` rather than inlined — the constraint won over the reference implementation. Authentication widened this to *one owning module per table* (below) rather than weakening it: `api/auth.py` may query `users`, `sessions`, and `invites`, and nothing else may.
 
 **The tenant predicate appears in exactly one function.** `query.visible_to(user_id)` returns `owner_user_id IS NULL OR owner_user_id = :user_id`. `get_item`, `feed`, and `search` all call it; none re-expresses it. This is the security boundary of a multi-tenant store, and a second copy is how it erodes.
 
@@ -66,10 +66,14 @@ These are enforced, not aspirational. Every one was verified tree-wide by the Pl
 - **Every endpoint requires a session.** There is no anonymous read. The two
   exceptions are `POST /api/auth/login` and `POST /api/auth/setup`, which are
   how a request acquires a session in the first place.
-- **Each table has exactly one owning module.** Content tables (`items`,
-  `sources`, `fetch_runs`, `item_tags`) belong to `store.py` for writes and
-  `query.py` for reads. The three auth tables (`users`, `sessions`, `invites`)
-  belong to `api/auth.py`. `routes.py` builds no queries.
+- **Every table that any code touches has exactly one owning module.** Content
+  tables (`items`, `sources`, `subscriptions`, `fetch_runs`, `item_tags`) belong
+  to `store.py` for writes and `query.py` for reads. The three auth tables
+  (`users`, `sessions`, `invites`) belong to `api/auth.py`. That is eight of the
+  nine; `collectors` is declared in `models.py` and deliberately has no owner
+  yet, because nothing reads or writes it until Plan 3. `routes.py` builds no
+  queries — when `PUT /api/subscriptions/{id}` needed an existence check, it got
+  `query.get_source_by_id` rather than a `session.get` in the handler.
 - **Accounts are created from a shell, never over HTTP from nothing.** There
   is no signup endpoint. `reachstore invite` issues a one-time link; only
   someone with shell access to this machine can start an account.
@@ -249,6 +253,14 @@ and no CSRF protection or login rate limiting (§9).
 - **Login answers a wrong password and an unknown email identically**, and
   spends a full password verification on the unknown-email branch. Without
   that, response latency alone would reveal which addresses have accounts.
+- **Emails are normalised to lowercase at every entry point** (`auth.normalize_email`,
+  applied in `find_user_by_email`, `create_invite`, and the one place a `users`
+  row is written). The reason is the bullet above, not security: the invitee
+  never types their address during setup, so they never learn which case the
+  operator used, and a case mismatch at the login form returns the deliberately
+  identical "incorrect" message. That makes a case-induced lockout impossible
+  for the locked-out person *or* the operator to diagnose without a database
+  query.
 - **The setup link is a URL fragment (`/#setup=<token>`), not a query
   string.** A fragment never reaches the server, so a single-use credential
   stays out of access logs, proxy logs, and the `Referer` header. The path

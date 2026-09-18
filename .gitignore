@@ -11,3 +11,6 @@ dist/
 build/
 *.egg-info/
 node_modules/
+
+# Written by web/tests/seed_e2e.py for the setup-flow e2e spec.
+web/tests/.e2e-invite-token

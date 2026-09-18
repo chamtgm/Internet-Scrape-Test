@@ -3833,7 +3833,7 @@ git commit -m "docs: auth, subscriptions, and why the loopback guard stays"
 
 ## Known deviations from the spec
 
-Recorded here so a reviewer does not treat them as implementation drift. Both were found while writing this plan.
+Recorded here so a reviewer does not treat them as implementation drift. Items 1-5 were found while writing this plan; item 6 was found during execution and added by the final review pass.
 
 1. **Setup link is `/#setup=<token>`; the spec said `/?setup=<token>`.** Both keep the path at `/`, so neither 404s under `StaticFiles` — the spec was right about that. The fragment is preferred solely because it is never sent to the server, keeping a single-use credential out of access logs, proxy logs, and the `Referer` header. Task 9, Step 5.
 
@@ -3844,3 +3844,31 @@ Recorded here so a reviewer does not treat them as implementation drift. Both we
 4. **`POST /api/auth/setup` returns 409 for an email that already has an account** — following the spec, and deliberately *not* folded into the uniform 400 used for every token failure. Whoever holds the token already knows the email it names, so the distinction leaks nothing they did not supply. Task 7.
 
 5. **The Plan-2 constraint "all SQL lives in `store.py` and `query.py`" is restated** as one owning module per table, because `auth.py` must query `sessions` and `invites`. See the amendment in Global Constraints. `post_login` and the three CLI commands also read `users` directly; consolidating those four into an `auth.find_user_by_email` helper is noted as optional in Tasks 4 and 6.
+
+6. **`lookup_session` does NOT delete an expired row as it passes over it** —
+   spec §4 said it does, and concluded from that that "expiry needs no
+   scheduler". Ruling R5 reversed it during execution; the plan body was
+   corrected at the time but this register was not, which is the omission this
+   entry closes. Two reasons the delete had to go. First, it never worked:
+   `deps.get_session` only closes (and therefore rolls back) after a request,
+   it never commits, so a `DELETE` issued from that read path was discarded on
+   every read-only request — the code would have looked like reclamation while
+   reclaiming nothing. Second, the obvious repair is worse: committing inside a
+   per-request dependency would also commit whatever unrelated work the handler
+   had pending, turning an authentication check into an arbitrary transaction
+   boundary. `lookup_session` is therefore a pure read, and an expired row is
+   inert rather than absent — the expiry check re-runs on every lookup, so it
+   can never grant access. Reclaiming rows is a separate concern (a periodic
+   sweep) if the table ever grows enough to matter. The spec's conclusion
+   survives in practice: there is still no scheduler, just for a different
+   reason than the spec gave.
+
+**Resolved rather than recorded:** spec §11 asked for a browser test of "the
+setup flow consuming an invite", and through Task 12 both of `auth.spec.js`'s
+setup tests were failure cases — `seed_e2e.py` created no invite, so no browser
+test *could* consume one. The final review pass closed this instead of
+registering it: `seed_e2e.py` now issues an invite on every run (deleting the
+account the previous run created, so the link is never spent), and
+`auth.spec.js` covers the success path end to end — password entry, the
+`history.replaceState` that clears the token from the address bar, and the
+transition into the store.
