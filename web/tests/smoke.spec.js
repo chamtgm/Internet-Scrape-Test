@@ -1,7 +1,21 @@
 import { expect, test } from '@playwright/test'
 
-test('the feed lists items and clicking one opens its full text', async ({ page }) => {
+// Must match E2E_EMAIL / E2E_PASSWORD in web/tests/seed_e2e.py.
+const EMAIL = 'e2e-admin@example.test'
+const PASSWORD = 'e2e-password-1234'
+
+async function signIn(page) {
   await page.goto('/')
+  await page.getByLabel('Email').fill(EMAIL)
+  await page.getByLabel('Password', { exact: true }).fill(PASSWORD)
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  // Wait for the store, not just the click: every later locator assumes the
+  // feed has replaced the login form.
+  await expect(page.locator('.item-list')).toBeVisible()
+}
+
+test('the feed lists items and clicking one opens its full text', async ({ page }) => {
+  await signIn(page)
 
   const rows = page.locator('.item-row')
   await expect(rows).toHaveCount(12)
@@ -41,7 +55,7 @@ test('an item with a javascript: URL renders its title as plain text, not a link
       },
     })
   )
-  await page.goto('/')
+  await signIn(page)
   await page.locator('.item-row').first().click()
 
   await expect(page.locator('.detail-title')).toContainText('Hostile item')
@@ -49,7 +63,7 @@ test('an item with a javascript: URL renders its title as plain text, not a link
 })
 
 test('searching narrows the list and clearing restores it', async ({ page }) => {
-  await page.goto('/')
+  await signIn(page)
   const rows = page.locator('.item-row')
   await expect(rows).toHaveCount(12)
 
@@ -69,7 +83,7 @@ test('searching narrows the list and clearing restores it', async ({ page }) => 
 })
 
 test('the health strip expands to show per-source detail', async ({ page }) => {
-  await page.goto('/')
+  await signIn(page)
   await page.locator('.health-summary').click()
   await expect(page.locator('.health-id')).toHaveText('https://e2e/feed')
   await expect(page.locator('.health-meta')).toContainText('12 items')

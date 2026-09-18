@@ -73,3 +73,41 @@ class FeedResponse(BaseModel):
 
 class SearchResponse(BaseModel):
     items: list[ItemSummary]
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SetupRequest(BaseModel):
+    token: str
+    password: str
+
+
+class UserOut(BaseModel):
+    id: int
+    email: str
+    display_name: str
+    is_admin: bool
+
+
+class CatalogEntryOut(BaseModel):
+    """Mirrors query.CatalogEntry; built via CatalogEntryOut(**vars(e)).
+
+    Same extra="forbid" reasoning as SourceStatusOut: pydantic already raises
+    on a missing field but silently drops an extra one, so forbidding extras
+    makes a dataclass/schema mismatch fail in both directions.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: int
+    kind: str
+    identifier: str
+    tier: int
+    subscribed: bool
+
+
+class CatalogResponse(BaseModel):
+    sources: list[CatalogEntryOut]

@@ -10,16 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from reachstore.config import get_settings
 from reachstore.db import make_engine, make_session_factory
 
-DEFAULT_USER_ID = 1
-"""The single user this slice serves.
-
-There is no authentication yet. Every route passes this to the `query`
-functions exactly where Plan 2 will pass the authenticated user's id, so the
-tenant-isolation path stays live and exercised rather than stubbed out. Plan 2
-replaces a constant instead of threading a new parameter through every call
-site.
-"""
-
 
 @lru_cache
 def get_engine() -> Engine:

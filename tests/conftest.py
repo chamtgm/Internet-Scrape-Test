@@ -1,5 +1,7 @@
+import itertools
 import os
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -85,3 +87,87 @@ def raw_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def fixtures_dir() -> Path:
     return Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _reset_collect_flag():
+    """`collect_runner._running` is a module global; a test that leaves it set
+    would poison every later test in the same process."""
+    from reachstore.api import collect_runner
+
+    collect_runner._running = False
+    yield
+    collect_runner._running = False
+
+
+@pytest.fixture
+def make_user(session):
+    """Create a user with a usable password. Returns (user, password)."""
+    from reachstore.api.auth import hash_password
+    from reachstore.models import User
+
+    counter = itertools.count(1)
+
+    def _make(*, is_admin=False, email=None, password="test-password-1234"):
+        n = next(counter)
+        user = User(
+            email=email or f"user{n}@example.test",
+            display_name=f"User {n}",
+            password_hash=hash_password(password),
+            is_admin=is_admin,
+            created_at=datetime(2026, 9, 18, tzinfo=UTC),
+        )
+        session.add(user)
+        session.flush()
+        return user, password
+
+    return _make
+
+
+@pytest.fixture
+def client_for(session, make_user):
+    """A TestClient carrying a real session cookie. Returns (client, user, password)."""
+    from fastapi.testclient import TestClient
+
+    from reachstore.api.app import create_app
+    from reachstore.api.auth import COOKIE_NAME, create_session
+    from reachstore.api.deps import get_session
+
+    def _client(*, is_admin=False, email=None):
+        user, password = make_user(is_admin=is_admin, email=email)
+        # Real clock, not a fixed date: get_current_user checks expiry against
+        # datetime.now(UTC), so a session stamped with a literal date would be
+        # expired by the time anyone runs this suite later.
+        token = create_session(session, user_id=user.id, now=datetime.now(UTC))
+        app = create_app()
+        app.dependency_overrides[get_session] = lambda: session
+        client = TestClient(app)
+        client.cookies.set(COOKIE_NAME, token)
+        return client, user, password
+
+    return _client
+
+
+@pytest.fixture
+def admin_client(client_for):
+    client, _user, _pw = client_for(is_admin=True)
+    return client
+
+
+@pytest.fixture
+def user_client(client_for):
+    client, _user, _pw = client_for(is_admin=False)
+    return client
+
+
+@pytest.fixture
+def anon_client(session):
+    """A TestClient with no session cookie."""
+    from fastapi.testclient import TestClient
+
+    from reachstore.api.app import create_app
+    from reachstore.api.deps import get_session
+
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+    return TestClient(app)

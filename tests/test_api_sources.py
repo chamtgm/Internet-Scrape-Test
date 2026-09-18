@@ -1,11 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from reachstore.api.app import create_app
-from reachstore.api.deps import get_session
 from reachstore.api.schemas import SourceStatusOut
 from reachstore.models import Source
 
@@ -24,24 +21,13 @@ VALID_SOURCE_STATUS_KWARGS = dict(
 )
 
 
-def make_client(session):
-    """A TestClient whose session is the test's rolled-back fixture session.
-
-    dependency_overrides is how the app gets a session it did not open. Without
-    it every test would hit the real database_url from .env.
-    """
-    app = create_app()
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
-
-
-def test_sources_endpoint_returns_every_source(session):
+def test_sources_endpoint_returns_every_source(session, admin_client):
     session.add(
         Source(kind="rss", identifier="https://a/feed", tier=1, config_json={}, created_at=NOW)
     )
     session.flush()
 
-    body = make_client(session).get("/api/sources").json()
+    body = admin_client.get("/api/sources").json()
     assert [s["identifier"] for s in body["sources"]] == ["https://a/feed"]
     assert body["sources"][0]["kind"] == "rss"
     assert body["sources"][0]["item_count"] == 0
@@ -49,8 +35,8 @@ def test_sources_endpoint_returns_every_source(session):
     assert body["sources"][0]["error_text"] is None
 
 
-def test_sources_endpoint_is_empty_when_no_sources(session):
-    assert make_client(session).get("/api/sources").json()["sources"] == []
+def test_sources_endpoint_is_empty_when_no_sources(admin_client):
+    assert admin_client.get("/api/sources").json()["sources"] == []
 
 
 def test_source_status_out_rejects_unexpected_field():

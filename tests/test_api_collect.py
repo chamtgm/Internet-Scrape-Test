@@ -1,37 +1,14 @@
 from datetime import UTC
 
-import pytest
-from fastapi.testclient import TestClient
-
 from reachstore.api import collect_runner
-from reachstore.api.app import create_app
-from reachstore.api.deps import get_session
 
 
-@pytest.fixture(autouse=True)
-def _reset_collect_runner_flag():
-    """A stuck or leaked flag from one test must not poison the next.
-
-    Matters more now that the claim (`try_start()`) can be made directly by a
-    test without going through a `run_collection` that clears it.
-    """
-    collect_runner._running = False
-    yield
-    collect_runner._running = False
-
-
-def make_client(session):
-    app = create_app()
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
-
-
-def test_collect_accepts_and_reports_started(session, monkeypatch):
+def test_collect_accepts_and_reports_started(session, admin_client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         collect_runner, "run_collection", lambda tier, force: calls.append((tier, force))
     )
-    response = make_client(session).post("/api/collect", json={"tier": 1, "force": False})
+    response = admin_client.post("/api/collect", json={"tier": 1, "force": False})
     assert response.status_code == 202
     assert response.json()["started"] is True
     assert response.json()["tier"] == 1
@@ -39,25 +16,25 @@ def test_collect_accepts_and_reports_started(session, monkeypatch):
     assert calls == [(1, False)]
 
 
-def test_collect_rejects_a_second_run_while_one_is_in_flight(session):
+def test_collect_rejects_a_second_run_while_one_is_in_flight(session, admin_client):
     # Claim the slot for real, the same way post_collect's own try_start()
     # call would for an in-flight run -- not by monkeypatching is_running,
     # which would pass even if the handler's guard were not atomic.
     assert collect_runner.try_start() is True
-    response = make_client(session).post("/api/collect", json={"tier": 1, "force": False})
+    response = admin_client.post("/api/collect", json={"tier": 1, "force": False})
     assert response.status_code == 409
     assert response.json()["started"] is False
     assert response.json()["reason"]
 
 
-def test_collect_rejects_an_invalid_tier(session):
-    client = make_client(session)
+def test_collect_rejects_an_invalid_tier(session, admin_client):
+    client = admin_client
     assert client.post("/api/collect", json={"tier": 0}).status_code == 422
     assert client.post("/api/collect", json={"tier": 9}).status_code == 422
 
 
-def test_sources_endpoint_reports_whether_a_run_is_in_flight(session, monkeypatch):
-    client = make_client(session)
+def test_sources_endpoint_reports_whether_a_run_is_in_flight(session, admin_client, monkeypatch):
+    client = admin_client
     assert client.get("/api/sources").json()["collecting"] is False
     monkeypatch.setattr(collect_runner, "is_running", lambda: True)
     assert client.get("/api/sources").json()["collecting"] is True

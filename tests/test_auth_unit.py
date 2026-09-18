@@ -1,0 +1,258 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from fastapi import HTTPException
+
+from reachstore.api import auth
+from reachstore.models import Invite, User, UserSession
+
+NOW = datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+
+
+def make_user(session, *, email="a@example.test", is_admin=False, password=None):
+    user = User(
+        email=email,
+        display_name="A",
+        password_hash=auth.hash_password(password) if password else "",
+        is_admin=is_admin,
+        created_at=NOW,
+    )
+    session.add(user)
+    session.flush()
+    return user
+
+
+# --- passwords ---------------------------------------------------------------
+
+def test_password_round_trip():
+    encoded = auth.hash_password("correct horse battery staple")
+    assert auth.verify_password("correct horse battery staple", encoded)
+
+
+def test_wrong_password_rejected():
+    encoded = auth.hash_password("right")
+    assert not auth.verify_password("wrong", encoded)
+
+
+def test_same_password_hashes_differently_each_time():
+    """A per-password random salt means two identical passwords do not collide,
+    so a stolen dump cannot be attacked by grouping equal hashes."""
+    a = auth.hash_password("same")
+    b = auth.hash_password("same")
+    assert a != b
+    assert auth.verify_password("same", a)
+    assert auth.verify_password("same", b)
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "",                      # the pre-existing hand-verify row
+        "not-a-hash",
+        "scrypt$only$three$parts",
+        "bcrypt$1$2$3$4$5",      # wrong scheme
+        "scrypt$x$8$1$AAAA$BBBB",  # non-numeric cost parameter
+    ],
+)
+def test_malformed_or_empty_hash_is_rejected_without_raising(encoded):
+    """`users.password_hash` defaults to "" and one such row already exists.
+    Returning False here is what makes it unable to authenticate -- no
+    migration special case, no condition spread across queries."""
+    assert auth.verify_password("anything", encoded) is False
+
+
+def test_tampered_digest_rejected():
+    encoded = auth.hash_password("secret")
+    scheme, n, r, p, salt, dk = encoded.split("$")
+    flipped = ("A" if dk[0] != "A" else "B") + dk[1:]
+    assert not auth.verify_password("secret", "$".join([scheme, n, r, p, salt, flipped]))
+
+
+def test_spend_dummy_verify_does_not_raise():
+    """Covers both branches: the first call (populates the cached dummy hash)
+    and a later call (verifies against it). A typo in either would 500 the
+    unknown-email login branch with nothing else to catch it."""
+    assert auth.spend_dummy_verify() is None
+    assert auth.spend_dummy_verify() is None
+
+
+# --- sessions ----------------------------------------------------------------
+
+def test_create_then_lookup_returns_the_user(session):
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    found = auth.lookup_session(session, token=token, now=NOW)
+    assert found is not None and found.id == user.id
+
+
+def test_raw_token_is_not_stored(session):
+    """Only the digest is persisted, so a dump yields no usable sessions."""
+    from sqlalchemy import select
+
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    stored = session.execute(select(UserSession.token_hash)).scalars().all()
+    assert token not in stored
+    assert len(stored[0]) == 64
+
+
+def test_unknown_token_returns_none(session):
+    assert auth.lookup_session(session, token="nope", now=NOW) is None
+
+
+def test_expired_session_is_rejected(session):
+    """An expired session is inert, not deleted: `lookup_session` is a pure
+    read, since the request-scoped session it runs in is only ever rolled
+    back, never committed, by `deps.get_session`."""
+    from sqlalchemy import func, select
+
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    later = NOW + auth.SESSION_LIFETIME + timedelta(seconds=1)
+
+    assert auth.lookup_session(session, token=token, now=later) is None
+    assert session.execute(select(func.count(UserSession.id))).scalar() == 1
+
+
+def test_session_valid_right_up_to_expiry(session):
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    just_before = NOW + auth.SESSION_LIFETIME - timedelta(seconds=1)
+    assert auth.lookup_session(session, token=token, now=just_before) is not None
+
+
+def test_session_expired_at_the_exact_instant(session):
+    """`expires_at <= now`: invalid at, not just after, the expiry instant.
+    A regression to `<` would pass every other expiry test here."""
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    assert auth.lookup_session(session, token=token, now=NOW + auth.SESSION_LIFETIME) is None
+
+
+def test_delete_session_logs_out(session):
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    auth.delete_session(session, token=token)
+    assert auth.lookup_session(session, token=token, now=NOW) is None
+
+
+def test_delete_session_is_idempotent(session):
+    auth.delete_session(session, token="never-existed")
+    auth.delete_session(session, token="never-existed")
+
+
+def test_delete_all_sessions_revokes_every_one(session):
+    user = make_user(session)
+    other = make_user(session, email="b@example.test")
+    tokens = [auth.create_session(session, user_id=user.id, now=NOW) for _ in range(3)]
+    kept = auth.create_session(session, user_id=other.id, now=NOW)
+
+    assert auth.delete_all_sessions(session, user_id=user.id) == 3
+    for t in tokens:
+        assert auth.lookup_session(session, token=t, now=NOW) is None
+    assert auth.lookup_session(session, token=kept, now=NOW) is not None
+
+
+# --- invites -----------------------------------------------------------------
+
+def test_invite_round_trip(session):
+    token = auth.create_invite(
+        session, email="new@example.test", display_name="New", is_admin=True, now=NOW
+    )
+    invite = auth.consume_invite(session, token=token, now=NOW)
+    assert invite is not None
+    assert invite.email == "new@example.test"
+    assert invite.display_name == "New"
+    assert invite.is_admin is True
+    assert invite.consumed_at == NOW
+
+
+def test_invite_cannot_be_consumed_twice(session):
+    token = auth.create_invite(
+        session, email="once@example.test", display_name="Once", is_admin=False, now=NOW
+    )
+    assert auth.consume_invite(session, token=token, now=NOW) is not None
+    assert auth.consume_invite(session, token=token, now=NOW) is None
+
+
+def test_expired_invite_is_rejected(session):
+    token = auth.create_invite(
+        session, email="old@example.test", display_name="Old", is_admin=False, now=NOW
+    )
+    later = NOW + auth.INVITE_LIFETIME + timedelta(seconds=1)
+    assert auth.consume_invite(session, token=token, now=later) is None
+
+
+def test_invite_expired_at_the_exact_instant(session):
+    """`expires_at <= now`: invalid at, not just after, the expiry instant."""
+    token = auth.create_invite(
+        session, email="exact@example.test", display_name="Exact", is_admin=False, now=NOW
+    )
+    assert auth.consume_invite(session, token=token, now=NOW + auth.INVITE_LIFETIME) is None
+
+
+def test_unknown_invite_token_is_rejected(session):
+    assert auth.consume_invite(session, token="nope", now=NOW) is None
+
+
+def test_invite_raw_token_is_not_stored(session):
+    from sqlalchemy import select
+
+    token = auth.create_invite(
+        session, email="h@example.test", display_name="H", is_admin=False, now=NOW
+    )
+    assert token not in session.execute(select(Invite.token_hash)).scalars().all()
+
+
+# --- dependencies (get_current_user, require_admin) --------------------------
+#
+# These are the actual security boundary; every other function in this module
+# is a helper they call. Called directly as plain functions -- no FastAPI
+# injection machinery, no HTTP -- passing `session=` and `token=` (the cookie
+# value) explicitly.
+
+def test_get_current_user_missing_cookie_is_401(session):
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token=None)
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_unknown_token_is_401(session):
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token="garbage")
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_expired_token_is_401(session):
+    """`get_current_user` reads the real clock, so the session is built with
+    a `now` far enough in the past that it is expired relative to whenever
+    this test actually runs."""
+    user = make_user(session)
+    long_ago = NOW - auth.SESSION_LIFETIME - timedelta(days=1)
+    token = auth.create_session(session, user_id=user.id, now=long_ago)
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token=token)
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_valid_token_returns_the_user(session):
+    """Real clock, not NOW: `get_current_user` checks expiry against
+    `datetime.now(UTC)`, so a session stamped with a literal date expires
+    SESSION_LIFETIME after that date and this test would start failing on its
+    own. Same reasoning as conftest.py's `client_for` fixture."""
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=datetime.now(UTC))
+    found = auth.get_current_user(session=session, token=token)
+    assert found.id == user.id
+
+
+def test_require_admin_rejects_non_admin(session):
+    user = make_user(session, is_admin=False)
+    with pytest.raises(HTTPException) as exc_info:
+        auth.require_admin(user=user)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_admin_allows_admin(session):
+    user = make_user(session, is_admin=True)
+    assert auth.require_admin(user=user) is user

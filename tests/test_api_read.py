@@ -1,20 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
-from fastapi.testclient import TestClient
-
 from reachstore.adapters.base import NormalizedItem
-from reachstore.api.app import create_app
-from reachstore.api.deps import get_session
 from reachstore.models import Source
 from reachstore.store import upsert_items
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
-
-
-def make_client(session):
-    app = create_app()
-    app.dependency_overrides[get_session] = lambda: session
-    return TestClient(app)
 
 
 def seed(session, raw_dir, count=5):
@@ -44,17 +34,17 @@ def seed(session, raw_dir, count=5):
     return source
 
 
-def test_feed_returns_items_newest_first_with_source_labels(session, raw_dir):
+def test_feed_returns_items_newest_first_with_source_labels(session, raw_dir, user_client):
     seed(session, raw_dir)
-    body = make_client(session).get("/api/feed").json()
+    body = user_client.get("/api/feed").json()
     assert [i["title"] for i in body["items"]] == [f"Item {i}" for i in range(5)]
     assert body["items"][0]["source_kind"] == "rss"
     assert body["items"][0]["source_identifier"] == "https://a/feed"
 
 
-def test_feed_excerpt_is_truncated_and_detail_is_not(session, raw_dir):
+def test_feed_excerpt_is_truncated_and_detail_is_not(session, raw_dir, user_client):
     seed(session, raw_dir)
-    client = make_client(session)
+    client = user_client
     summary = client.get("/api/feed").json()["items"][0]
     assert len(summary["excerpt"]) <= 240
     detail = client.get(f"/api/items/{summary['id']}").json()
@@ -63,7 +53,7 @@ def test_feed_excerpt_is_truncated_and_detail_is_not(session, raw_dir):
     assert detail["fetched_at"]
 
 
-def test_feed_paginates_without_gaps_or_duplicates(session, raw_dir):
+def test_feed_paginates_without_gaps_or_duplicates(session, raw_dir, user_client):
     """Cursor walk built to force both hard cases in query.feed's sort key
     (published_at DESC NULLS LAST, id DESC): three items share one
     published_at, split across a page boundary so the id DESC tie-break arm
@@ -97,7 +87,7 @@ def test_feed_paginates_without_gaps_or_duplicates(session, raw_dir):
         raw_dir=raw_dir,
         now=NOW,
     )
-    client = make_client(session)
+    client = user_client
     seen, cursor, pages = [], None, 0
     saw_null_cursor = False
     while pages < 10:
@@ -120,28 +110,28 @@ def test_feed_paginates_without_gaps_or_duplicates(session, raw_dir):
     assert saw_null_cursor, "cursor never carried a null published_at through the round trip"
 
 
-def test_search_returns_hits_and_filters_by_kind(session, raw_dir):
+def test_search_returns_hits_and_filters_by_kind(session, raw_dir, user_client):
     seed(session, raw_dir)
-    client = make_client(session)
+    client = user_client
     assert client.get("/api/search", params={"q": "padding"}).json()["items"]
     narrowed = client.get("/api/search", params={"q": "padding", "kind": "github_repo"}).json()
     assert narrowed["items"] == []
 
 
-def test_search_results_carry_source_labels(session, raw_dir):
+def test_search_results_carry_source_labels(session, raw_dir, user_client):
     seed(session, raw_dir)
-    hits = make_client(session).get("/api/search", params={"q": "padding"}).json()["items"]
+    hits = user_client.get("/api/search", params={"q": "padding"}).json()["items"]
     assert hits[0]["source_identifier"] == "https://a/feed"
 
 
-def test_missing_item_is_404(session, raw_dir):
+def test_missing_item_is_404(session, raw_dir, user_client):
     seed(session, raw_dir)
-    assert make_client(session).get("/api/items/999999").status_code == 404
+    assert user_client.get("/api/items/999999").status_code == 404
 
 
-def test_bad_limit_is_422(session, raw_dir):
+def test_bad_limit_is_422(session, raw_dir, user_client):
     seed(session, raw_dir)
-    client = make_client(session)
+    client = user_client
     assert client.get("/api/feed", params={"limit": "banana"}).status_code == 422
     assert client.get("/api/feed", params={"limit": 0}).status_code == 422
     assert client.get("/api/search", params={"q": ""}).status_code == 422

@@ -35,6 +35,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True)
     display_name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(Text, default="")
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     llm_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
     llm_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -131,3 +134,49 @@ class ItemTag(Base):
     )
     tag: Mapped[str] = mapped_column(String(80), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class UserSession(Base):
+    """A logged-in browser session.
+
+    Named `UserSession` rather than `Session` because almost every module that
+    imports this one also imports `sqlalchemy.orm.Session`; the table itself is
+    still `sessions`.
+
+    `token_hash` holds the SHA-256 of the cookie value, never the value. A
+    database dump therefore yields no usable sessions -- the same reasoning
+    that applies to passwords.
+    """
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Invite(Base):
+    """A one-time invitation to create an account.
+
+    Deliberately a separate table rather than fields on `users`: a `users` row
+    then always denotes a usable account, instead of every query having to
+    remember "...unless it is a pending one". `email` is not unique -- issuing
+    a second invite for the same address is a new row.
+    """
+
+    __tablename__ = "invites"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(320))
+    display_name: Mapped[str] = mapped_column(String(120))
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

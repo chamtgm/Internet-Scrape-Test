@@ -273,7 +273,9 @@ class Invite(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320))
     display_name: Mapped[str] = mapped_column(String(120))
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -349,11 +351,19 @@ Expected: PASS. The `engine` fixture runs `alembic upgrade head` against the tes
 - [ ] **Step 6: Apply the migration to the development database**
 
 ```bash
+export $(grep -E '^DATABASE_URL=' .env | xargs)
 .venv/bin/alembic upgrade head
 .venv/bin/alembic current
 ```
 
-Expected: `current` reports `0002`. This is the database the web UI and CLI actually use; the test database is separate.
+Expected: `current` reports `0002 (head)`.
+
+**The `export` is required, not optional.** `migrations/env.py:15` reads
+`os.environ.get("ALEMBIC_DATABASE_URL") or os.environ["DATABASE_URL"]` — it
+does *not* read `.env`. Pydantic `Settings` loads `.env`, which is why the CLI
+and the API work without this, but Alembic is invoked directly and does not go
+through `Settings`. A bare `alembic upgrade head` fails with
+`KeyError: 'DATABASE_URL'`. This is the database the web UI and CLI actually use; the test database is separate.
 
 - [ ] **Step 7: Verify the existing row survived**
 
@@ -674,23 +684,30 @@ def verify_password(password: str, encoded: str) -> bool:
     unable to authenticate -- without a migration special case, and without a
     condition that has to be remembered at every query.
     """
+    # Only PARSING is guarded. hashlib.scrypt is deliberately outside the try:
+    # it raises ValueError for bad or over-budget parameters, and swallowing
+    # that would turn a wrong _maxmem into a total authentication outage that
+    # presents as "wrong password" -- no exception, no log, no failing test.
+    # Fail loudly on a crypto fault; fail False on malformed input.
     try:
         scheme, n, r, p, salt_b64, dk_b64 = encoded.split("$")
         if scheme != "scrypt":
             return False
         n_i, r_i, p_i = int(n), int(r), int(p)
+        salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(dk_b64)
-        dk = hashlib.scrypt(
-            password.encode(),
-            salt=base64.b64decode(salt_b64),
-            n=n_i,
-            r=r_i,
-            p=p_i,
-            maxmem=_maxmem(n_i, r_i),
-            dklen=len(expected),
-        )
     except (AttributeError, ValueError, TypeError):
         return False
+
+    dk = hashlib.scrypt(
+        password.encode(),
+        salt=salt,
+        n=n_i,
+        r=r_i,
+        p=p_i,
+        maxmem=_maxmem(n_i, r_i),
+        dklen=len(expected),
+    )
     return secrets.compare_digest(dk, expected)
 
 
@@ -706,7 +723,11 @@ def spend_dummy_verify() -> None:
     """
     global _DUMMY
     if _DUMMY is None:
+        # Populating it already cost one scrypt; returning here keeps the
+        # first unknown-email request from costing two, in the one function
+        # whose entire purpose is to equalise timing.
         _DUMMY = hash_password(secrets.token_urlsafe(16))
+        return
     verify_password("x", _DUMMY)
 
 
@@ -745,9 +766,14 @@ def lookup_session(session: Session, *, token: str, now: datetime) -> User | Non
     if row is None:
         return None
     if row.expires_at <= now:
-        # Cleaning up here means expiry needs no scheduled job.
-        session.delete(row)
-        session.flush()
+        # Left in place rather than deleted. This function runs on every
+        # authenticated request via get_current_user, and `get_session` never
+        # commits -- it yields and then closes, which rolls back -- so a delete
+        # here would be discarded anyway on the read-only path. Committing
+        # instead would be worse: it would also commit whatever unrelated work
+        # is pending in the request-scoped session, and a GET should not write.
+        # An expired row is inert because this check re-runs on every lookup;
+        # reclaiming the rows is a separate concern if it ever matters.
         return None
     return session.get(User, row.user_id)
 
@@ -797,12 +823,14 @@ def consume_invite(session: Session, *, token: str, now: datetime) -> Invite | N
 
 def get_current_user(
     session: Session = Depends(get_session),
-    reachstore_session: str | None = Cookie(default=None),
+    reachstore_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> User:
     """The authenticated user, or 401.
 
-    The parameter name must match COOKIE_NAME -- that is how FastAPI knows
-    which cookie to read.
+    `alias=COOKIE_NAME` rather than relying on the parameter being spelled to
+    match: a FastAPI Cookie parameter whose name differs from the cookie reads
+    None *silently*, with no error, which would disable authentication rather
+    than break it loudly.
     """
     if reachstore_session is None:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -909,7 +937,12 @@ def client_for(session, make_user):
     """A TestClient carrying a real session cookie. Returns (client, user, password)."""
     from fastapi.testclient import TestClient
 
-    from reachstore.api.app import create_app
+    # Walk `router.routes`, NOT `create_app().routes`. On fastapi 0.141.1 /
+    # starlette 1.6.0, FastAPI.include_router() wraps the sub-router in an
+    # opaque node with no `.path`, so `create_app().routes` exposes only
+    # `/api/openapi.json` and `/api/docs` -- every real endpoint reads as
+    # "not /api" and this test passes with ZERO coverage. Verified directly.
+    from reachstore.api.routes import router
     from reachstore.api.auth import COOKIE_NAME, create_session
     from reachstore.api.deps import get_session
 
@@ -1535,10 +1568,12 @@ Expected: PASS. **The 18 tests retrofitted in Task 3 must still pass without fur
 - [ ] **Step 8: Confirm the constant is gone everywhere**
 
 ```bash
-grep -rn "DEFAULT_USER_ID" src/ tests/ web/ docs/ || echo "clean"
+grep -rn "DEFAULT_USER_ID" src/ tests/ web/src/ || echo "clean"
 ```
 
-Expected: only `docs/` hits, if any, plus the `test_default_user_id_is_gone` reference. No hit in `src/`.
+Expected: exactly one hit — the `test_default_user_id_is_gone` assertion in `tests/test_api_permissions.py`. **No hit in `src/`.**
+
+**Do not grep all of `docs/`, and do not edit anything under `docs/superpowers/specs/`, `docs/superpowers/plans/`, or `docs/superpowers/reviews/` other than this plan.** Those are the immutable historical record of earlier work — Plan 1's spec, plan, and per-task review reports legitimately describe `DEFAULT_USER_ID` as a thing that existed at that time, and rewriting them would falsify the decision record. The only living document that needs updating is `docs/architecture.md`, and that is Task 12's job, not yours.
 
 - [ ] **Step 9: Commit**
 
@@ -1753,20 +1788,21 @@ Hardcoding 5173 in the invite output would print a broken link in production, wh
 
 - [ ] **Step 4: Add the CLI commands**
 
-In `src/reachstore/cli.py`, add to the imports:
+In `src/reachstore/cli.py`, adjust the imports. Its current block was read to confirm each point:
+
+- `from datetime import UTC, datetime` is **already present** — do not add it again.
+- `get_settings` is **already imported** from `reachstore.config`.
+- There is **no** `from sqlalchemy import ...` line. Add `from sqlalchemy import select`.
+- It imports `from reachstore.models import Source`. Extend that line to `from reachstore.models import Source, User`.
+- Add the auth import:
 
 ```python
-from datetime import UTC, datetime
-
-from sqlalchemy import select
-
 from reachstore.api.auth import (
     MIN_PASSWORD_LENGTH,
     create_invite,
     delete_all_sessions,
     hash_password,
 )
-from reachstore.models import User
 ```
 
 Append the three commands:
@@ -2386,7 +2422,7 @@ def catalog(session: Session, *, user_id: int) -> list[CatalogEntry]:
     ]
 ```
 
-Add `Subscription` to the `reachstore.models` import in `query.py` if it is not already there.
+**Add no imports to `query.py`.** It already has `dataclass`, `select`, `Session`, and `Subscription` — its import block was read to confirm this.
 
 - [ ] **Step 4: Add the writers to `store.py`**
 
@@ -2402,7 +2438,7 @@ def subscribe(session: Session, *, user_id: int, source_id: int, now: datetime) 
     the same reasoning as upsert_items.
     """
     session.execute(
-        pg_insert(Subscription)
+        insert(Subscription)
         .values(user_id=user_id, source_id=source_id, active=True, created_at=now)
         .on_conflict_do_update(
             constraint="uq_subscriptions_user_source", set_={"active": True}
@@ -2423,7 +2459,12 @@ def unsubscribe(session: Session, *, user_id: int, source_id: int) -> None:
     )
 ```
 
-`store.py` already imports `pg_insert` (as `from sqlalchemy.dialects.postgresql import insert as pg_insert`) for `upsert_items`; reuse that name rather than adding a second alias. Add `update` to the `sqlalchemy` import and `Subscription` to the models import.
+Imports, stated exactly — `store.py`'s current import block was read to confirm each of these:
+
+- It already has `from sqlalchemy.dialects.postgresql import insert` (**no alias**). Use the bare name `insert`; do not add a second aliased import of the same symbol.
+- It has **no** `from sqlalchemy import ...` line at all. Add one: `from sqlalchemy import update`.
+- It imports `from reachstore.models import Item`. Extend that line to `from reachstore.models import Item, Subscription`.
+- `datetime` and `Session` are already imported.
 
 - [ ] **Step 5: Add the schemas**
 
@@ -2567,6 +2608,78 @@ In `tests/test_api_permissions.py`, add to `CASES`:
 ```
 
 `PUT /api/subscriptions/{id}` is not in the table because it 404s on an id that does not exist, which would need a seeded source; `test_subscribing_requires_a_session` covers its anonymous case.
+
+**Also close three gaps the Task 5 review found in this file.** They were inherited from my plan text, and this task is the right moment because it is the first task to add new endpoints — exactly what the file's own docstring claims to catch.
+
+1. **Make the docstring's promise real.** `test_api_permissions.py` opens by claiming "A new endpoint added without a row here is the failure this file exists to catch" — but nothing enumerates the app's routes, so a new endpoint with no row leaves the file green. Add:
+
+```python
+def test_every_api_route_is_in_the_matrix():
+    """Makes this file's opening claim true rather than aspirational.
+
+    Without this, a new endpoint added with no CASES row leaves the suite
+    green and its access level unasserted -- which is precisely how an
+    endpoint ships unauthenticated.
+    """
+    from reachstore.api.app import create_app
+
+    # Exempt by design, each for a stated reason:
+    #   /api/auth/login  - must be reachable anonymously; that IS its contract
+    #   /api/auth/setup  - same, and it is covered by tests/test_api_auth.py
+    #   /api/collect     - covered by test_collect_is_admin_only, which needs
+    #                      a stubbed runner the table-driven test cannot supply
+    #   /api/docs, /api/openapi.json - FastAPI's own, not ours
+    EXEMPT = {
+        "/api/auth/login",
+        "/api/auth/setup",
+        "/api/collect",
+        "/api/docs",
+        "/api/openapi.json",
+    }
+    covered = {path.split("?")[0] for _method, path, *_ in CASES}
+
+    # A route's `.path` is a TEMPLATE ("/api/items/{item_id}") but CASES holds
+    # concrete paths ("/api/items/999999"). Plain equality never matches them,
+    # which would report every templated route as missing even when it has a
+    # row. Turn "{param}" segments into a wildcard before comparing.
+    def _covered(template: str) -> bool:
+        pattern = "^" + re.sub(r"\{[^/]+\}", r"[^/]+", template) + "$"
+        return any(re.match(pattern, c) for c in covered)
+
+    missing = []
+    for route in router.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api") or path in EXEMPT or _covered(path):
+            continue
+        missing.append(path)
+    assert not missing, f"endpoints with no permission-matrix row: {sorted(set(missing))}"
+```
+
+`covered` strips the query string, because `CASES` holds `/api/search?q=anything` while the route's own path is `/api/search`. Add `import re` at the top of the file.
+
+2. **Make the collect stub match the real contract.** `no_op_collect` currently uses `lambda tier, force: None`, but the real `run_collection` clears `_running` in its `finally` (`collect_runner.py:105-107`). The stub leaves it `True`. Cross-test leakage is already prevented by conftest's autouse reset, but a second admin `POST /api/collect` inside one test would get an unexplained 409. Change it to:
+
+```python
+    monkeypatch.setattr(
+        collect_runner,
+        "run_collection",
+        lambda tier, force: setattr(collect_runner, "_running", False),
+    )
+```
+
+3. **Name the role in the matrix failure message.** `{client}` renders as `<starlette.testclient.TestClient object at 0x...>`, which tells you nothing about which role failed — in the one test guarding the auth boundary. Label the tuples:
+
+```python
+    for label, client, expected in (
+        ("anon", anon_client, anon),
+        ("user", user_client, user),
+        ("admin", admin_client, admin),
+    ):
+        response = client.request(method, path)
+        assert response.status_code == expected, (
+            f"{method} {path} as {label}: expected {expected}, got {response.status_code}"
+        )
+```
 
 - [ ] **Step 10: Run the full suite and commit**
 
@@ -2842,7 +2955,17 @@ export default function Store({ me, onSignedOut }) {
   // A 401 mid-session means the cookie was revoked or expired. Dropping back
   // to the login form is the truthful response; showing "401 Unauthorized" in
   // the error banner would leave a dead UI on screen.
-  const fail = (e) => (e.status === 401 ? onSignedOut() : setError(String(e)))
+  //
+  // useCallback is load-bearing, not decoration: `fail` is passed to
+  // SubscriptionStrip as `onError`, whose `reload` is useCallback(..., [onError])
+  // and whose effect is keyed on [open, reload]. An unstable `fail` gives
+  // `reload` a new identity on every Store render, so selecting an item or a
+  // poll tick would re-fire fetchCatalog() while the strip is open. onSignedOut
+  // is already memoised in App, so this is genuinely stable.
+  const fail = useCallback(
+    (e) => (e.status === 401 ? onSignedOut() : setError(String(e))),
+    [onSignedOut],
+  )
 ```
 
 3. `refreshSources` becomes admin-only. `/api/sources` returns 403 to a non-admin, so calling it unconditionally would paint an error banner for every ordinary user on page load:
@@ -2918,7 +3041,18 @@ export default function App() {
   const [me, setMe] = useState(undefined)
   const [setupToken, setSetupToken] = useState(readSetupToken)
 
-  useEffect(() => { fetchMe().then(setMe).catch(() => setMe(null)) }, [])
+  // Distinct from "signed out": fetchMe() already returns null for a 401 and
+  // rethrows everything else, so anything landing in this catch is a real
+  // failure -- a 500, a dropped connection, a malformed response. Collapsing
+  // it into setMe(null) would render a login form during an outage and tell
+  // the user nothing.
+  const [bootError, setBootError] = useState(null)
+
+  useEffect(() => {
+    fetchMe()
+      .then(setMe)
+      .catch((e) => { setBootError(String(e)); setMe(null) })
+  }, [])
 
   const signedOut = useCallback(() => {
     setMe(null)
@@ -2928,9 +3062,17 @@ export default function App() {
 
   if (me === undefined) return <p className="booting">…</p>
   if (me === null) {
-    return setupToken
-      ? <Setup token={setupToken} onDone={setMe} />
-      : <Login onDone={setMe} />
+    // The banner sits above the form rather than replacing it: the failure may
+    // be transient, so let them try to sign in -- but never leave a real
+    // outage looking like an ordinary signed-out visit.
+    return (
+      <>
+        {bootError && <p className="error">Could not reach the server: {bootError}</p>}
+        {setupToken
+          ? <Setup token={setupToken} onDone={setMe} />
+          : <Login onDone={setMe} />}
+      </>
+    )
   }
   return <Store me={me} onSignedOut={signedOut} />
 }
@@ -2987,10 +3129,12 @@ Append to `web/src/styles.css`:
 - [ ] **Step 8: Verify the build and lint**
 
 ```bash
-cd /Users/dev2/Desktop/Testing/web && npm run build && npm run lint
+cd /Users/dev2/Desktop/Testing/web && npm run build
 ```
 
-Expected: both clean. A failure here is almost always an unused import left behind in `App.jsx` after the body moved to `Store.jsx`.
+Expected: clean. A failure here is almost always an unresolved import left behind in `App.jsx` after the body moved to `Store.jsx`.
+
+**There is no `npm run lint`.** This project has never had ESLint — `web/package.json` defines only `dev`, `build`, `preview`, `seed:e2e`, and `test:e2e`, and there is no eslint config file. Do not add one: the global constraints forbid new dependencies, and wiring up a linter is not part of an auth slice. `vite build` is the build gate.
 
 - [ ] **Step 9: Verify by hand in a browser**
 
@@ -3121,7 +3265,7 @@ export default function SearchBar({
       </label>
 ```
 
-Also change `submit` so toggling the box re-runs an active search rather than requiring the user to press Enter again — `Store` owns that, so `SearchBar` only reports the change.
+`SearchBar` gets only the checkbox and the two new props — **do not touch `submit`.** Re-running an active search on toggle is `Store.changeSubscribedOnly`'s job (Step 3). Two components both re-running the query would fire duplicate requests on every toggle.
 
 - [ ] **Step 3: Wire it through `Store.jsx`**
 
@@ -3220,10 +3364,10 @@ Append to `web/src/styles.css`:
 - [ ] **Step 5: Verify the build and lint**
 
 ```bash
-cd /Users/dev2/Desktop/Testing/web && npm run build && npm run lint
+cd /Users/dev2/Desktop/Testing/web && npm run build
 ```
 
-Expected: both clean.
+Expected: clean. There is no `npm run lint` in this project — see Task 9, Step 8.
 
 - [ ] **Step 6: Verify by hand**
 
@@ -3502,7 +3646,15 @@ Also update the `RuntimeError` message, which repeats the stale claim:
     )
 ```
 
-Run `.venv/bin/pytest tests/test_api_app.py -v` afterwards — one of its three tests asserts on `assert_loopback`. If it matches on message text, update the assertion to match the new message.
+Run `.venv/bin/pytest tests/test_api_app.py -v` afterwards. It should pass **unchanged**: `test_non_loopback_host_is_refused` asserts only that `"REACHSTORE_ALLOW_NONLOCAL"` appears in the message, and the replacement text above still contains it. If that test fails, your replacement dropped the override name — restore it rather than weakening the assertion.
+
+- [ ] **Step 1b: Correct a docstring this slice made stale**
+
+`src/reachstore/query.py` — `source_health`'s docstring justifies not scoping the function by subscriptions on the grounds that "that table has no write path yet". Task 8 added the write path (`store.subscribe` / `store.unsubscribe`), so the stated reason is now false.
+
+The function's *behaviour* is still correct and must not change — `source_health` is the admin diagnostics view and is deliberately global, unscoped by subscription. Only the justification needs replacing. Say instead that it stays global because it is the operator's view of every source's health, and that per-user narrowing belongs to `/api/catalog`, which is the non-admin surface.
+
+Run `.venv/bin/pytest tests/test_query.py -v` afterwards to confirm nothing depended on the old wording.
 
 - [ ] **Step 2: Update `docs/architecture.md`**
 
@@ -3620,11 +3772,28 @@ Two other commands:
 .venv/bin/python -m reachstore.cli revoke-sessions someone@example.com
 ```
 
+Note on migrations: Alembic does not read `.env` — `migrations/env.py` takes
+the URL from the real environment. Export it first:
+
+```bash
+export $(grep -E '^DATABASE_URL=' .env | xargs)
+.venv/bin/alembic upgrade head
+```
+
+The CLI and the API do not need this; they load `.env` through pydantic
+`Settings`.
+
 `--admin` grants the operator surface: the health strip, and the Collect
 button. Everyone else can read, search, and subscribe.
 ```
 
 In `web/README.md`, note in the e2e section that the specs sign in first, using the admin account `seed_e2e.py` creates, and that the credentials are duplicated in both files and must stay in step.
+
+- [ ] **Step 3b: Correct `seed_e2e.py`'s module docstring**
+
+Task 11 added a subscription reset to `web/tests/seed_e2e.py`, but its module docstring still says only that the script is idempotent because `upsert_items` conflicts and skips. A reader skimming the top of the file would not learn that the e2e user's subscriptions are also cleared on every run.
+
+Add one line saying so, and why: `unsubscribe` is a soft delete that only clears `active`, so without the reset a second `npm run test:e2e` would start with a subscription already in place and fail the "nothing subscribed" precondition.
 
 - [ ] **Step 4: Run everything**
 
@@ -3632,22 +3801,26 @@ In `web/README.md`, note in the e2e section that the specs sign in first, using 
 cd /Users/dev2/Desktop/Testing
 .venv/bin/pytest
 .venv/bin/python web/tests/seed_e2e.py
-cd web && npm run build && npm run lint && npm run test:e2e
+cd web && npm run build && npm run test:e2e
 ```
 
-Expected: the Python suite green with zero warnings, the build and lint clean, and 12 e2e tests passing.
+Expected: the Python suite green with zero warnings, the build clean, and 12 e2e tests passing.
 
 - [ ] **Step 5: Final consistency sweep**
 
 ```bash
 cd /Users/dev2/Desktop/Testing
-grep -rn "DEFAULT_USER_ID" src/ docs/ web/src/ || echo "clean"
-grep -rn "no authentication" src/ docs/ || echo "clean"
+grep -rn "DEFAULT_USER_ID" src/ web/src/ docs/architecture.md || echo "clean"
+grep -rn "no authentication" src/ docs/architecture.md || echo "clean"
 git status --porcelain
 git check-ignore .env && echo ".env is ignored"
 ```
 
-The first two must be clean apart from the permissions test's reference. The last confirms `.env` — which holds `WEB_BASE_URL` and the database URLs — is still untracked.
+Both greps must come back clean.
+
+**Scope note — this is important.** The greps are deliberately limited to `src/`, `web/src/`, and `docs/architecture.md`. **Do not touch `docs/superpowers/specs/`, `docs/superpowers/plans/`, or `docs/superpowers/reviews/`.** Those are the preserved historical record of earlier slices (committed deliberately in `f978ec2`, "docs: preserve execution ledger and per-task reports"). Plan 1's spec and plan correctly describe `DEFAULT_USER_ID` and "no authentication" as facts *of their time*; editing them to match today would falsify the record of how this system got here. `docs/architecture.md` is the only living document that must reflect current reality.
+
+The last command confirms `.env` — which holds `WEB_BASE_URL` and the database URLs — is still untracked.
 
 - [ ] **Step 6: Commit**
 
@@ -3660,7 +3833,7 @@ git commit -m "docs: auth, subscriptions, and why the loopback guard stays"
 
 ## Known deviations from the spec
 
-Recorded here so a reviewer does not treat them as implementation drift. Both were found while writing this plan.
+Recorded here so a reviewer does not treat them as implementation drift. Items 1-5 were found while writing this plan; item 6 was found during execution and added by the final review pass.
 
 1. **Setup link is `/#setup=<token>`; the spec said `/?setup=<token>`.** Both keep the path at `/`, so neither 404s under `StaticFiles` — the spec was right about that. The fragment is preferred solely because it is never sent to the server, keeping a single-use credential out of access logs, proxy logs, and the `Referer` header. Task 9, Step 5.
 
@@ -3671,3 +3844,31 @@ Recorded here so a reviewer does not treat them as implementation drift. Both we
 4. **`POST /api/auth/setup` returns 409 for an email that already has an account** — following the spec, and deliberately *not* folded into the uniform 400 used for every token failure. Whoever holds the token already knows the email it names, so the distinction leaks nothing they did not supply. Task 7.
 
 5. **The Plan-2 constraint "all SQL lives in `store.py` and `query.py`" is restated** as one owning module per table, because `auth.py` must query `sessions` and `invites`. See the amendment in Global Constraints. `post_login` and the three CLI commands also read `users` directly; consolidating those four into an `auth.find_user_by_email` helper is noted as optional in Tasks 4 and 6.
+
+6. **`lookup_session` does NOT delete an expired row as it passes over it** —
+   spec §4 said it does, and concluded from that that "expiry needs no
+   scheduler". Ruling R5 reversed it during execution; the plan body was
+   corrected at the time but this register was not, which is the omission this
+   entry closes. Two reasons the delete had to go. First, it never worked:
+   `deps.get_session` only closes (and therefore rolls back) after a request,
+   it never commits, so a `DELETE` issued from that read path was discarded on
+   every read-only request — the code would have looked like reclamation while
+   reclaiming nothing. Second, the obvious repair is worse: committing inside a
+   per-request dependency would also commit whatever unrelated work the handler
+   had pending, turning an authentication check into an arbitrary transaction
+   boundary. `lookup_session` is therefore a pure read, and an expired row is
+   inert rather than absent — the expiry check re-runs on every lookup, so it
+   can never grant access. Reclaiming rows is a separate concern (a periodic
+   sweep) if the table ever grows enough to matter. The spec's conclusion
+   survives in practice: there is still no scheduler, just for a different
+   reason than the spec gave.
+
+**Resolved rather than recorded:** spec §11 asked for a browser test of "the
+setup flow consuming an invite", and through Task 12 both of `auth.spec.js`'s
+setup tests were failure cases — `seed_e2e.py` created no invite, so no browser
+test *could* consume one. The final review pass closed this instead of
+registering it: `seed_e2e.py` now issues an invite on every run (deleting the
+account the previous run created, so the link is never spent), and
+`auth.spec.js` covers the success path end to end — password entry, the
+`history.replaceState` that clears the token from the address bar, and the
+transition into the store.

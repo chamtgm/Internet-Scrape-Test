@@ -38,6 +38,10 @@ export default defineConfig({
     {
       command: 'cd .. && .venv/bin/python -c "from reachstore.api.app import serve; serve()"',
       url: 'http://127.0.0.1:8000/api/sources',
+      // Returns 401 now that every endpoint requires a session. Playwright
+      // treats 401/403 as "the server is up", which is the only thing this
+      // probe needs to establish. Verified: the suite does not hang waiting
+      // on this webServer entry.
       env: { DATABASE_URL: TEST_DB },
       reuseExistingServer: false,
       timeout: 30000,

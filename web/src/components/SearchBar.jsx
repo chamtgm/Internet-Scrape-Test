@@ -1,6 +1,9 @@
 import { useState } from 'react'
 
-export default function SearchBar({ onSearch, onClear, onCollect, collecting }) {
+export default function SearchBar({
+  onSearch, onClear, onCollect, collecting, canCollect,
+  subscribedOnly, onSubscribedOnlyChange,
+}) {
   const [q, setQ] = useState('')
   const [tier, setTier] = useState(1)
 
@@ -18,15 +21,28 @@ export default function SearchBar({ onSearch, onClear, onCollect, collecting }) 
         placeholder="search collected items…"
         aria-label="search"
       />
+      <label className="subs-only">
+        <input
+          type="checkbox"
+          checked={subscribedOnly}
+          onChange={(e) => onSubscribedOnlyChange(e.target.checked)}
+          aria-label="subscribed only"
+        />
+        subscribed only
+      </label>
       {q && <button type="button" onClick={() => { setQ(''); onClear() }}>clear</button>}
-      <select value={tier} onChange={(e) => setTier(Number(e.target.value))} aria-label="tier">
-        <option value={1}>Tier 1</option>
-        <option value={2}>Tier 2</option>
-        <option value={3}>Tier 3</option>
-      </select>
-      <button type="button" onClick={() => onCollect(tier)} disabled={collecting}>
-        {collecting ? 'Collecting…' : 'Collect'}
-      </button>
+      {canCollect && (
+        <>
+          <select value={tier} onChange={(e) => setTier(Number(e.target.value))} aria-label="tier">
+            <option value={1}>Tier 1</option>
+            <option value={2}>Tier 2</option>
+            <option value={3}>Tier 3</option>
+          </select>
+          <button type="button" onClick={() => onCollect(tier)} disabled={collecting}>
+            {collecting ? 'Collecting…' : 'Collect'}
+          </button>
+        </>
+      )}
     </form>
   )
 }

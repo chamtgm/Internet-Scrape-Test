@@ -166,6 +166,60 @@ def get_source(session: Session, *, kind: str, identifier: str) -> Source | None
     return session.execute(stmt).scalars().one_or_none()
 
 
+def get_source_by_id(session: Session, source_id: int) -> Source | None:
+    """Look up a source by primary key, or None.
+
+    Exists so `routes.put_subscription` can answer "does this source exist?"
+    without building a query in the HTTP layer -- `routes.py` owns no SQL, and
+    `query.py` already owns every read of `sources`.
+    """
+    return session.get(Source, source_id)
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """A source as a non-admin sees it: enough to decide whether to subscribe,
+    and nothing about its health. Diagnostics stay in SourceStatus, which only
+    /api/sources returns."""
+
+    source_id: int
+    kind: str
+    identifier: str
+    tier: int
+    subscribed: bool
+
+
+def catalog(session: Session, *, user_id: int) -> list[CatalogEntry]:
+    """Every source, flagged with whether this user subscribes to it.
+
+    A LEFT JOIN rather than two queries and a set intersection: one round trip,
+    and the flag cannot drift from the row it describes.
+    """
+    rows = session.execute(
+        select(
+            Source.id,
+            Source.kind,
+            Source.identifier,
+            Source.tier,
+            Subscription.id.isnot(None),
+        )
+        .select_from(Source)
+        .outerjoin(
+            Subscription,
+            (Subscription.source_id == Source.id)
+            & (Subscription.user_id == user_id)
+            & (Subscription.active.is_(True)),
+        )
+        .order_by(Source.tier, Source.identifier)
+    ).all()
+    return [
+        CatalogEntry(
+            source_id=r[0], kind=r[1], identifier=r[2], tier=r[3], subscribed=bool(r[4])
+        )
+        for r in rows
+    ]
+
+
 @dataclass(frozen=True)
 class SourceStatus:
     source_id: int
@@ -185,16 +239,16 @@ def source_health(session: Session) -> list[SourceStatus]:
     Deliberately not scoped to a user. Sources have no owner -- content is
     shared and interest is per-user via `subscriptions` -- so returning every
     source is a defensible operator view. It is deliberately NOT filtered by
-    `subscriptions` either: that table has no write path yet, so scoping by
-    it would return an empty list in any real deployment and this command
-    would appear broken.
+    `subscriptions` either: this is the operator's view of every source's
+    health, not a per-user one, so narrowing it to what one admin happens to
+    subscribe to would hide sources nobody is watching yet. Per-user
+    narrowing belongs to `/api/catalog`, the non-admin surface.
 
     This function used to take (and ignore) a `user_id` parameter, which
     looked like tenant isolation but was not: source identifiers are not
     innocuous (a private RSS feed URL can carry a token; a `github_repo`
-    identifier can name a private repo), so exposing this to anything but an
-    operator requires adding real per-user scoping first, once subscriptions
-    have a write path.
+    identifier can name a private repo), which is why per-user scoping now
+    lives in `/api/catalog` rather than here.
 
     Derives everything from fetch_runs; nothing here is stored state.
     """
