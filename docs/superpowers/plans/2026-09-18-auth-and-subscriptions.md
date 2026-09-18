@@ -676,23 +676,30 @@ def verify_password(password: str, encoded: str) -> bool:
     unable to authenticate -- without a migration special case, and without a
     condition that has to be remembered at every query.
     """
+    # Only PARSING is guarded. hashlib.scrypt is deliberately outside the try:
+    # it raises ValueError for bad or over-budget parameters, and swallowing
+    # that would turn a wrong _maxmem into a total authentication outage that
+    # presents as "wrong password" -- no exception, no log, no failing test.
+    # Fail loudly on a crypto fault; fail False on malformed input.
     try:
         scheme, n, r, p, salt_b64, dk_b64 = encoded.split("$")
         if scheme != "scrypt":
             return False
         n_i, r_i, p_i = int(n), int(r), int(p)
+        salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(dk_b64)
-        dk = hashlib.scrypt(
-            password.encode(),
-            salt=base64.b64decode(salt_b64),
-            n=n_i,
-            r=r_i,
-            p=p_i,
-            maxmem=_maxmem(n_i, r_i),
-            dklen=len(expected),
-        )
     except (AttributeError, ValueError, TypeError):
         return False
+
+    dk = hashlib.scrypt(
+        password.encode(),
+        salt=salt,
+        n=n_i,
+        r=r_i,
+        p=p_i,
+        maxmem=_maxmem(n_i, r_i),
+        dklen=len(expected),
+    )
     return secrets.compare_digest(dk, expected)
 
 
@@ -708,7 +715,11 @@ def spend_dummy_verify() -> None:
     """
     global _DUMMY
     if _DUMMY is None:
+        # Populating it already cost one scrypt; returning here keeps the
+        # first unknown-email request from costing two, in the one function
+        # whose entire purpose is to equalise timing.
         _DUMMY = hash_password(secrets.token_urlsafe(16))
+        return
     verify_password("x", _DUMMY)
 
 
@@ -747,9 +758,14 @@ def lookup_session(session: Session, *, token: str, now: datetime) -> User | Non
     if row is None:
         return None
     if row.expires_at <= now:
-        # Cleaning up here means expiry needs no scheduled job.
-        session.delete(row)
-        session.flush()
+        # Left in place rather than deleted. This function runs on every
+        # authenticated request via get_current_user, and `get_session` never
+        # commits -- it yields and then closes, which rolls back -- so a delete
+        # here would be discarded anyway on the read-only path. Committing
+        # instead would be worse: it would also commit whatever unrelated work
+        # is pending in the request-scoped session, and a GET should not write.
+        # An expired row is inert because this check re-runs on every lookup;
+        # reclaiming the rows is a separate concern if it ever matters.
         return None
     return session.get(User, row.user_id)
 
@@ -799,12 +815,14 @@ def consume_invite(session: Session, *, token: str, now: datetime) -> Invite | N
 
 def get_current_user(
     session: Session = Depends(get_session),
-    reachstore_session: str | None = Cookie(default=None),
+    reachstore_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> User:
     """The authenticated user, or 401.
 
-    The parameter name must match COOKIE_NAME -- that is how FastAPI knows
-    which cookie to read.
+    `alias=COOKIE_NAME` rather than relying on the parameter being spelled to
+    match: a FastAPI Cookie parameter whose name differs from the cookie reads
+    None *silently*, with no error, which would disable authentication rather
+    than break it loudly.
     """
     if reachstore_session is None:
         raise HTTPException(status_code=401, detail="not authenticated")
