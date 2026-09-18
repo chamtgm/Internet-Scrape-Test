@@ -61,7 +61,11 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded: str) -> bool:
-    """False for anything that is not a valid matching hash. Never raises.
+    """False for anything that is not a valid matching hash. Never raises for
+    malformed input -- but a genuine scrypt fault (e.g. `maxmem` wrong for a
+    raised cost setting) is allowed to raise rather than being swallowed as
+    a false "wrong password": only the parsing of `encoded` sits inside the
+    `try`, not the `hashlib.scrypt` call itself.
 
     `users.password_hash` defaults to "" and one such row already exists
     (`hand-verify@example.com`, left over from Plan 1 hand-verification).
@@ -74,18 +78,19 @@ def verify_password(password: str, encoded: str) -> bool:
         if scheme != "scrypt":
             return False
         n_i, r_i, p_i = int(n), int(r), int(p)
+        salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(dk_b64)
-        dk = hashlib.scrypt(
-            password.encode(),
-            salt=base64.b64decode(salt_b64),
-            n=n_i,
-            r=r_i,
-            p=p_i,
-            maxmem=_maxmem(n_i, r_i),
-            dklen=len(expected),
-        )
     except (AttributeError, ValueError, TypeError):
         return False
+    dk = hashlib.scrypt(
+        password.encode(),
+        salt=salt,
+        n=n_i,
+        r=r_i,
+        p=p_i,
+        maxmem=_maxmem(n_i, r_i),
+        dklen=len(expected),
+    )
     return secrets.compare_digest(dk, expected)
 
 
@@ -101,7 +106,12 @@ def spend_dummy_verify() -> None:
     """
     global _DUMMY
     if _DUMMY is None:
+        # Generating the dummy hash already costs one scrypt call -- the same
+        # cost `verify_password` pays below on every later call. Also calling
+        # `verify_password` here would charge the very first unknown-email
+        # login for two scrypt calls instead of one.
         _DUMMY = hash_password(secrets.token_urlsafe(16))
+        return
     verify_password("x", _DUMMY)
 
 
@@ -129,7 +139,17 @@ def create_session(session: Session, *, user_id: int, now: datetime) -> str:
 
 
 def lookup_session(session: Session, *, token: str, now: datetime) -> User | None:
-    """The user for this token, or None. Deletes the row if it has expired."""
+    """The user for this token, or None.
+
+    A pure read. An expired row is left in place rather than deleted here:
+    `deps.get_session` only closes (and therefore rolls back) after a
+    request, it never commits, so a delete issued from this read path would
+    never persist anyway. The row is simply inert -- this check re-runs on
+    every lookup, so an expired row can never grant access. Reclaiming
+    expired rows is a separate concern (a periodic sweep) if the table ever
+    grows enough to matter; at a handful of users with 30-day sessions the
+    volume is negligible.
+    """
     row = (
         session.execute(
             select(UserSession).where(UserSession.token_hash == _digest(token))
@@ -137,12 +157,7 @@ def lookup_session(session: Session, *, token: str, now: datetime) -> User | Non
         .scalars()
         .one_or_none()
     )
-    if row is None:
-        return None
-    if row.expires_at <= now:
-        # Cleaning up here means expiry needs no scheduled job.
-        session.delete(row)
-        session.flush()
+    if row is None or row.expires_at <= now:
         return None
     return session.get(User, row.user_id)
 
@@ -192,16 +207,19 @@ def consume_invite(session: Session, *, token: str, now: datetime) -> Invite | N
 
 def get_current_user(
     session: Session = Depends(get_session),
-    reachstore_session: str | None = Cookie(default=None),
+    token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> User:
     """The authenticated user, or 401.
 
-    The parameter name must match COOKIE_NAME -- that is how FastAPI knows
-    which cookie to read.
+    `alias=COOKIE_NAME` binds this parameter to the `reachstore_session`
+    cookie regardless of what the Python parameter is named. Relying on the
+    parameter name matching the cookie name instead is a silent footgun --
+    verified experimentally: FastAPI reads `None` with no error if they ever
+    drift apart.
     """
-    if reachstore_session is None:
+    if token is None:
         raise HTTPException(status_code=401, detail="not authenticated")
-    user = lookup_session(session, token=reachstore_session, now=datetime.now(UTC))
+    user = lookup_session(session, token=token, now=datetime.now(UTC))
     if user is None:
         raise HTTPException(status_code=401, detail="not authenticated")
     return user

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 from reachstore.api import auth
 from reachstore.models import Invite, User, UserSession
@@ -67,6 +68,14 @@ def test_tampered_digest_rejected():
     assert not auth.verify_password("secret", "$".join([scheme, n, r, p, salt, flipped]))
 
 
+def test_spend_dummy_verify_does_not_raise():
+    """Covers both branches: the first call (populates the cached dummy hash)
+    and a later call (verifies against it). A typo in either would 500 the
+    unknown-email login branch with nothing else to catch it."""
+    assert auth.spend_dummy_verify() is None
+    assert auth.spend_dummy_verify() is None
+
+
 # --- sessions ----------------------------------------------------------------
 
 def test_create_then_lookup_returns_the_user(session):
@@ -91,8 +100,10 @@ def test_unknown_token_returns_none(session):
     assert auth.lookup_session(session, token="nope", now=NOW) is None
 
 
-def test_expired_session_is_rejected_and_deleted(session):
-    """Deleting on the way past means expiry needs no scheduler."""
+def test_expired_session_is_rejected(session):
+    """An expired session is inert, not deleted: `lookup_session` is a pure
+    read, since the request-scoped session it runs in is only ever rolled
+    back, never committed, by `deps.get_session`."""
     from sqlalchemy import func, select
 
     user = make_user(session)
@@ -100,7 +111,7 @@ def test_expired_session_is_rejected_and_deleted(session):
     later = NOW + auth.SESSION_LIFETIME + timedelta(seconds=1)
 
     assert auth.lookup_session(session, token=token, now=later) is None
-    assert session.execute(select(func.count(UserSession.id))).scalar() == 0
+    assert session.execute(select(func.count(UserSession.id))).scalar() == 1
 
 
 def test_session_valid_right_up_to_expiry(session):
@@ -108,6 +119,14 @@ def test_session_valid_right_up_to_expiry(session):
     token = auth.create_session(session, user_id=user.id, now=NOW)
     just_before = NOW + auth.SESSION_LIFETIME - timedelta(seconds=1)
     assert auth.lookup_session(session, token=token, now=just_before) is not None
+
+
+def test_session_expired_at_the_exact_instant(session):
+    """`expires_at <= now`: invalid at, not just after, the expiry instant.
+    A regression to `<` would pass every other expiry test here."""
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    assert auth.lookup_session(session, token=token, now=NOW + auth.SESSION_LIFETIME) is None
 
 
 def test_delete_session_logs_out(session):
@@ -164,6 +183,14 @@ def test_expired_invite_is_rejected(session):
     assert auth.consume_invite(session, token=token, now=later) is None
 
 
+def test_invite_expired_at_the_exact_instant(session):
+    """`expires_at <= now`: invalid at, not just after, the expiry instant."""
+    token = auth.create_invite(
+        session, email="exact@example.test", display_name="Exact", is_admin=False, now=NOW
+    )
+    assert auth.consume_invite(session, token=token, now=NOW + auth.INVITE_LIFETIME) is None
+
+
 def test_unknown_invite_token_is_rejected(session):
     assert auth.consume_invite(session, token="nope", now=NOW) is None
 
@@ -175,3 +202,53 @@ def test_invite_raw_token_is_not_stored(session):
         session, email="h@example.test", display_name="H", is_admin=False, now=NOW
     )
     assert token not in session.execute(select(Invite.token_hash)).scalars().all()
+
+
+# --- dependencies (get_current_user, require_admin) --------------------------
+#
+# These are the actual security boundary; every other function in this module
+# is a helper they call. Called directly as plain functions -- no FastAPI
+# injection machinery, no HTTP -- passing `session=` and `token=` (the cookie
+# value) explicitly.
+
+def test_get_current_user_missing_cookie_is_401(session):
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token=None)
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_unknown_token_is_401(session):
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token="garbage")
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_expired_token_is_401(session):
+    """`get_current_user` reads the real clock, so the session is built with
+    a `now` far enough in the past that it is expired relative to whenever
+    this test actually runs."""
+    user = make_user(session)
+    long_ago = NOW - auth.SESSION_LIFETIME - timedelta(days=1)
+    token = auth.create_session(session, user_id=user.id, now=long_ago)
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_current_user(session=session, token=token)
+    assert exc_info.value.status_code == 401
+
+
+def test_get_current_user_valid_token_returns_the_user(session):
+    user = make_user(session)
+    token = auth.create_session(session, user_id=user.id, now=NOW)
+    found = auth.get_current_user(session=session, token=token)
+    assert found.id == user.id
+
+
+def test_require_admin_rejects_non_admin(session):
+    user = make_user(session, is_admin=False)
+    with pytest.raises(HTTPException) as exc_info:
+        auth.require_admin(user=user)
+    assert exc_info.value.status_code == 403
+
+
+def test_require_admin_allows_admin(session):
+    user = make_user(session, is_admin=True)
+    assert auth.require_admin(user=user) is user
