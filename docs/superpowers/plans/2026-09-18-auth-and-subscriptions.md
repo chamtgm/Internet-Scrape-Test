@@ -937,7 +937,12 @@ def client_for(session, make_user):
     """A TestClient carrying a real session cookie. Returns (client, user, password)."""
     from fastapi.testclient import TestClient
 
-    from reachstore.api.app import create_app
+    # Walk `router.routes`, NOT `create_app().routes`. On fastapi 0.141.1 /
+    # starlette 1.6.0, FastAPI.include_router() wraps the sub-router in an
+    # opaque node with no `.path`, so `create_app().routes` exposes only
+    # `/api/openapi.json` and `/api/docs` -- every real endpoint reads as
+    # "not /api" and this test passes with ZERO coverage. Verified directly.
+    from reachstore.api.routes import router
     from reachstore.api.auth import COOKIE_NAME, create_session
     from reachstore.api.deps import get_session
 
@@ -2632,16 +2637,25 @@ def test_every_api_route_is_in_the_matrix():
         "/api/openapi.json",
     }
     covered = {path.split("?")[0] for _method, path, *_ in CASES}
+
+    # A route's `.path` is a TEMPLATE ("/api/items/{item_id}") but CASES holds
+    # concrete paths ("/api/items/999999"). Plain equality never matches them,
+    # which would report every templated route as missing even when it has a
+    # row. Turn "{param}" segments into a wildcard before comparing.
+    def _covered(template: str) -> bool:
+        pattern = "^" + re.sub(r"\{[^/]+\}", r"[^/]+", template) + "$"
+        return any(re.match(pattern, c) for c in covered)
+
     missing = []
-    for route in create_app().routes:
+    for route in router.routes:
         path = getattr(route, "path", "")
-        if not path.startswith("/api") or path in EXEMPT or path in covered:
+        if not path.startswith("/api") or path in EXEMPT or _covered(path):
             continue
         missing.append(path)
     assert not missing, f"endpoints with no permission-matrix row: {sorted(set(missing))}"
 ```
 
-Note `covered` strips the query string, because `CASES` holds `/api/search?q=anything` while the route's own path is `/api/search`.
+`covered` strips the query string, because `CASES` holds `/api/search?q=anything` while the route's own path is `/api/search`. Add `import re` at the top of the file.
 
 2. **Make the collect stub match the real contract.** `no_op_collect` currently uses `lambda tier, force: None`, but the real `run_collection` clears `_running` in its `finally` (`collect_runner.py:105-107`). The stub leaves it `True`. Cross-test leakage is already prevented by conftest's autouse reset, but a second admin `POST /api/collect` inside one test would get an unexplained 409. Change it to:
 
