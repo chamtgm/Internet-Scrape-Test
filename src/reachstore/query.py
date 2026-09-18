@@ -229,9 +229,10 @@ def source_health(session: Session) -> list[SourceStatus]:
     Deliberately not scoped to a user. Sources have no owner -- content is
     shared and interest is per-user via `subscriptions` -- so returning every
     source is a defensible operator view. It is deliberately NOT filtered by
-    `subscriptions` either: that table has no write path yet, so scoping by
-    it would return an empty list in any real deployment and this command
-    would appear broken.
+    `subscriptions` either: this is the operator's view of every source's
+    health, not a per-user one, so narrowing it to what one admin happens to
+    subscribe to would hide sources nobody is watching yet. Per-user
+    narrowing belongs to `/api/catalog`, the non-admin surface.
 
     This function used to take (and ignore) a `user_id` parameter, which
     looked like tenant isolation but was not: source identifiers are not

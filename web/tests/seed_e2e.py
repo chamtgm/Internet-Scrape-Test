@@ -3,7 +3,11 @@
 Run from the repo root:  .venv/bin/python web/tests/seed_e2e.py
 
 Idempotent -- `upsert_items` conflicts on (source_id, external_id) and skips,
-so re-running adds nothing. Safe to run before every e2e invocation.
+so re-running adds nothing. It also resets the seeded user's subscriptions to
+unsubscribed on every run: `unsubscribe` is a soft delete that only clears
+`active` (see store.py), so without this reset a second `npm run test:e2e`
+would start with a subscription already in place and fail the "nothing
+subscribed" precondition. Safe to run before every e2e invocation.
 
 Note: pytest's `engine` fixture runs DROP SCHEMA on this same database at
 session scope, so do not run the Python suite and the e2e suite concurrently.

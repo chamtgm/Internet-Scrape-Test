@@ -16,10 +16,16 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 def assert_loopback(host: str, *, allow_nonlocal: bool) -> None:
     """Refuse to serve on a non-loopback interface.
 
-    There is no authentication in this slice, so the network boundary is the
-    only access control there is. Binding 0.0.0.0 on an untrusted network
-    exposes the entire store, including private items, to anyone who can reach
-    the port.
+    There is authentication now, but not transport security: the session
+    cookie does not set `Secure` (there is no HTTPS on localhost, and setting
+    it would stop the cookie being sent at all), there are no CSRF tokens, and
+    there is no login rate limiting. On a loopback interface none of those
+    matter. On any other interface all three do, and the cookie would travel
+    in cleartext.
+
+    So the guard stays, and exposing this beyond localhost requires building
+    HTTPS, CSRF tokens, and login rate limiting first -- not just flipping
+    REACHSTORE_ALLOW_NONLOCAL.
     """
     if allow_nonlocal:
         return
@@ -31,7 +37,8 @@ def assert_loopback(host: str, *, allow_nonlocal: bool) -> None:
     except ValueError:
         pass
     raise RuntimeError(
-        f"refusing to bind non-loopback host {host!r}: there is no authentication. "
+        f"refusing to bind non-loopback host {host!r}: the session cookie is not "
+        "Secure and there is no CSRF protection or login rate limiting. "
         "Set REACHSTORE_ALLOW_NONLOCAL=1 to override deliberately."
     )
 

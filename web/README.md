@@ -22,10 +22,15 @@ npm run test:e2e
 
 This seeds the TEST database (`TEST_DATABASE_URL` from `../.env`) with deterministic data, then
 starts both the API (pointed at that same test database) and the Vite dev server, and runs
-`tests/smoke.spec.js` against them with Playwright. Port 8000 must be free — the API server is
-started fresh for the test run, never reused, so it does not silently run against a database
-someone else pointed it at. It seeds and asserts an exact 12 items/1 source, so a fresh clone
-with `npm ci` behaves the same as any other checkout.
+`tests/smoke.spec.js` and `tests/auth.spec.js` against them with Playwright. Port 8000 must be
+free — the API server is started fresh for the test run, never reused, so it does not silently
+run against a database someone else pointed it at. It seeds and asserts an exact 12 items/1
+source, so a fresh clone with `npm ci` behaves the same as any other checkout.
+
+The specs sign in first, using the admin account `seed_e2e.py` creates
+(`e2e-admin@example.test`). Those credentials are duplicated in `seed_e2e.py`
+and in the spec files themselves (`smoke.spec.js`, `auth.spec.js`) rather than
+shared from one place, so all three must be kept in step by hand.
 
 `@playwright/test` needs a matching Chromium build downloaded to
 `~/Library/Caches/ms-playwright`. If `npm run test:e2e` fails with
